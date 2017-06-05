@@ -21,13 +21,15 @@
 #include <ucontext.h>
 #include <sys/mman.h>
 #include <execinfo.h>
+#include <udis86.h>
 
 #define PAGE_SIZE 4096
 int log_fd;
 std::uint64_t offset;
+std::uint64_t address; 
+uint8_t remembered_byte;
 
 void shut_down(); 
-
 std::uint64_t find_address(const char* file_path, std::string func_name) {
 
         std::uint64_t addr;
@@ -65,20 +67,20 @@ std::uint64_t find_address(const char* file_path, std::string func_name) {
         return addr; 
 }
 
-void single_step(std::uint64_t func_address, std::size_t page_size) {
+void single_step(std::uint64_t func_address) {
 
-        std::uint64_t page_start = func_address & ~(page_size-1) ;
+        std::uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
         //making the page writable, readable and executable
-        if (-1 == mprotect((void*) page_start, page_size, PROT_READ| PROT_WRITE| PROT_EXEC)) {
+        if (-1 == mprotect((void*) page_start, PAGE_SIZE, PROT_READ| PROT_WRITE| PROT_EXEC)) {
             fprintf(stderr, "%s\n", strerror(errno));
             exit(2); 
         }
 
-        std::uint64_t remembered_byte = func_address & 0xff; 
+
         //setting the last byte to 0xCC causes a SIGTRAP signal for single-stepping
-        //*(int*)func_address = (func_address & ~0xff) | 0xCC;
         uint8_t* function_bytes = (uint8_t*)func_address;
+        remembered_byte = function_bytes[0];
         function_bytes[0] = 0xCC;
 }
 //returns the entry for the main executable on first execution of callback
@@ -98,10 +100,11 @@ typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 void handler(int signal, siginfo_t* info, void* cont) {
-        
         if (signal != SIGTRAP) exit(2);
         //printf("caught SIGTRAP\n");
-        
+
+        static int run = 0;
+         
         // process assembly instruction info w m_context
         ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
         //printf("hi\n");
@@ -109,24 +112,57 @@ void handler(int signal, siginfo_t* info, void* cont) {
         //printf("Stack starts at: 0x%llx\n", context->uc_mcontext.gregs[REG_RBP]);
         //printf("hi2\n");
 
-        // Fake the push %rbp instruction
-        uint64_t* stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
-        uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
-        stack--;
-        *stack = frame;
-        context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack;
-        //printf("hi3 %p\n", (void*)context->uc_mcontext.gregs[REG_RIP]);
+        
+        if (remembered_byte == 0x55) {
+                if (!run) {
+                        printf("Entered only once\n");
+                        // Fake the push %rbp instruction
+                        uint64_t* stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
+                        uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
+                        stack--;
+                        *stack = frame;
+                        context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack;
 
-        // Put back the original byte (0x55 only)
-        //uint8_t* ip = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP] - 1);
-        //*ip = 0x55;
-        //context->uc_mcontext.gregs[REG_RIP]--;
+                        run = 1; 
+                }
+              
+                ud_t ud_obj;
+                ud_init(&ud_obj);
+
+                ud_set_mode(&ud_obj, 64);
+                ud_set_syntax(&ud_obj, UD_SYN_ATT);
+                ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
+
+                ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
+                ud_disassemble(&ud_obj);
+
+                
+                printf("here: %s\n", ud_insn_asm(&ud_obj));
+                if (ud_insn_mnemonic(&ud_obj) == UD_Iret) {
+                        printf("found return\n");
+                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+                        return;
+                }
+
+                context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
+                //check it only reads 
+         } else {
+                // Put back the original byte (0x55 only)
+                //uint8_t* ip = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP] - 1);
+                //*ip = 0x55;
+                //context->uc_mcontext.gregs[REG_RIP]--;
+         }
 }
 
-void seg_handler(int sig) {
-        if (sig != SIGSEGV) exit(2);
+void seg_handler(int sig, siginfo_t* info, void* context) {
+
+        if (sig != SIGSEGV) {
+                printf("should not be here\n");
+                exit(2); 
+        };
 
         printf("in SEG handler\n");
+        printf("SEGFAULT address: %p\n", info->si_addr);
         int j, nptrs; 
         void* buffer[200];
         char** strings;
@@ -135,29 +171,31 @@ void seg_handler(int sig) {
 
         backtrace_symbols_fd(buffer, nptrs, STDOUT_FILENO);
 
-        //for (j = 0; j < nptrs; j++) {
-        //      printf("here %s\n", strings[j]);
-        // }
+        void* bt[1];
+        bt[0] = (void*) ((ucontext_t*) context)->uc_mcontext.gregs[REG_RIP];
 
-        // free(strings);
+        backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
 }
 
 
 
 
 static int wrapped_main(int argc, char** argv, char** env) {
-
         printf("Entered main wrapper\n");
 
         //set up for the signal handler
-        struct sigaction sig_action;
+        struct sigaction sig_action, debugger;
         memset(&sig_action, 0, sizeof(sig_action));
         sig_action.sa_sigaction = handler;
         sigemptyset(&sig_action.sa_mask);
         sig_action.sa_flags = SA_SIGINFO;
-
         sigaction(SIGTRAP, &sig_action, 0);
-        signal(SIGSEGV, seg_handler);
+
+        memset(&debugger, 0, sizeof(debugger));
+        debugger.sa_sigaction = seg_handler;
+        sigemptyset(&debugger.sa_mask);
+        debugger.sa_flags = SA_SIGINFO;
+        sigaction(SIGSEGV, &debugger, 0);
 
         //storing the func_name searched for as the last argument
         std::string func_name = argv[argc-1];  
@@ -165,12 +203,18 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         //getting the address of the main executable for the offset 
         dl_iterate_phdr(callback, NULL);
-        
-        std::uint64_t address = find_address("/proc/self/exe", func_name);
-        
-        single_step(address, PAGE_SIZE);
-        
-        og_main(argc, argv, env); 
+
+        printf("finding address\n");
+        address = find_address("/proc/self/exe", func_name);
+
+        printf("single stepping\n");
+        single_step(address);
+
+        printf("running og main\n");
+        og_main(argc, argv, env);
+
+        printf("exiting\n");
+        return 0; 
 }
 
 

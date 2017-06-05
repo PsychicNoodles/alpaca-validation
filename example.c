@@ -1,11 +1,13 @@
 #include <stdio.h>
 
-void fake_func() {
+int fake_func() {
         printf("fake\n");
+        return 117; 
 }
 
 int main () {
         printf("Entered main at address: %p\n", main);
-        //   fake_func();
+        fake_func();
+        return 0; 
 }
 
