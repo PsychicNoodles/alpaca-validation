@@ -1,0 +1,8 @@
+libdir=/home/ivicamar/elf/libelfin/alpaca-validation/elf
+includedir=/home/ivicamar/elf/libelfin/alpaca-validation/elf
+
+Name: libelf++
+Description: C++11 ELF library
+Version: 
+Libs: -L${libdir} -lelf++
+Cflags: -I${includedir}
