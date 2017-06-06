@@ -30,6 +30,8 @@ std::uint64_t address;
 uint8_t remembered_byte;
 bool return_reached; 
 int call_count;
+uint64_t* stack;
+
 
 void shut_down(); 
 std::uint64_t find_address(const char* file_path, std::string func_name) {
@@ -121,7 +123,7 @@ void handler(int signal, siginfo_t* info, void* cont) {
                 if (!run) {
                         fprintf(stderr, "Entered only once\n");
                         // Fake the push %rbp instruction
-                        uint64_t* stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
+                        stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
                         uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
                         stack--;
                         *stack = frame;
@@ -141,7 +143,11 @@ void handler(int signal, siginfo_t* info, void* cont) {
                 fprintf(stderr, "disassembling\n");
                 fprintf(stderr, "disassembled: %x\n", ud_disassemble(&ud_obj));
 
-                fprintf(stderr, "rax: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
+                // different processing for read/write
+                // with writing to memory, the writes will be outside of the current stack frame : stack base -> current pointer 
+                if ();
+                        
+                //returning the value 
                 if (return_reached) {
                         // RAX won't hold large values ! 
                         fprintf(stderr, "return reached: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
@@ -149,14 +155,14 @@ void handler(int signal, siginfo_t* info, void* cont) {
                         return_reached = false;
                         if(call_count < 0) {
                                 fprintf(stderr, "call_count < 0, ending\n");
+                                fprintf(stderr, "rax: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
                                 context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
                                 return;
                         }
                 }
 
                 fprintf(stderr, "here: %s\n", ud_insn_asm(&ud_obj));
-                fprintf(stderr, "off: %lx\n", ud_insn_off(&ud_obj));
-                fprintf(stderr, "hex: %s\n", ud_insn_hex(&ud_obj));
+
                 switch (ud_insn_mnemonic(&ud_obj)) {
                         case UD_Iret:
                                 fprintf(stderr, "found return\n");
@@ -167,7 +173,14 @@ void handler(int signal, siginfo_t* info, void* cont) {
                                 fprintf(stderr, "found call\n");
                                 call_count++;
                                 break;
+
+                        case UD_Imov:
+                                fprintf(stderr, "writing to memory\n");
+                                // memory writes
+                                just_read (&ud_obj, 1, context);
+                                break; 
                         default: break;
+                      
                 }
 
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
@@ -179,6 +192,62 @@ void handler(int signal, siginfo_t* info, void* cont) {
                 //uint8_t* ip = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP] - 1);
                 //*ip = 0x55;
                 //context->uc_mcontext.gregs[REG_RIP]--;
+        }
+}
+
+bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context, ) {
+        uint64_t* mem_address;
+        const ud_operand_t* instrct = ud_insn_opr(obj, n); 
+        if (instrct.type == UD_OP_MEM) { // 1 is the right side of the instruction (destination)
+                base = get_register(instrct.base, context); 
+                index = get_register(instrct.index, context);
+                mem_address = instrct.offset + base + (index*instrct.scale);
+        }
+
+        
+}
+
+uint64_t get_register(ud_type_t obj, ucontext_t* context) {
+
+        switch(obj) {
+        case ud_type_t.UD_R_RAX:
+                return context->uc_mcontext.gregs[REG_RAX];
+        case ud_type_t.UD_R_RCX:
+                return context->uc_mcontext.gregs[REG_RCX];
+        case ud_type_t.UD_R_RDX:
+                return context->uc_mcontext.gregs[REG_RDX];
+        case ud_type_t.UD_R_RBX:
+                return context->uc_mcontext.gregs[REG_RBX];
+        case ud_type_t.UD_R_RSP:
+                return context->uc_mcontext.gregs[REG_RSP];
+        case ud_type_t.UD_R_RBP:
+                return context->uc_mcontext.gregs[REG_RBP];
+        case ud_type_t.UD_R_RSI:
+                return context->uc_mcontext.gregs[REG_RSI];
+        case ud_type_t.UD_R_RDI:
+                return context->uc_mcontext.gregs[REG_RDI];             
+        case ud_type_t.UD_R_R8:
+                return context->uc_mcontext.gregs[REG_R8];
+        case ud_type_t.UD_R_R9:
+                return context->uc_mcontext.gregs[REG_R9];              
+        case ud_type_t.UD_R_R10:
+                return context->uc_mcontext.gregs[REG_R10];             
+        case ud_type_t.UD_R_R11:
+                return context->uc_mcontext.gregs[REG_R11];
+        case ud_type_t.UD_R_R12:
+                return context->uc_mcontext.gregs[REG_R12];
+        case ud_type_t.UD_R_R13:
+                return context->uc_mcontext.gregs[REG_R13];
+        case ud_type_t.UD_R_R14:
+                return context->uc_mcontext.gregs[REG_R14];
+        case ud_type_t.UD_R_R15:
+                return context->uc_mcontext.gregs[REG_15];
+        case ud_type_t.UD_NONE:
+                return 0;
+        default:
+                fprintf(stderr, "32, 16 and 8bit registers are not supported yet");
+                fprintf(sderr, obj); //?
+                exit(2); 
         }
 }
 
