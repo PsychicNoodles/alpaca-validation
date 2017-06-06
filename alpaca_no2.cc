@@ -32,8 +32,10 @@ bool return_reached;
 int call_count;
 uint64_t* stack;
 
+bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context);
+void shut_down();
+uint64_t get_register(ud_type_t obj, ucontext_t* context);
 
-void shut_down(); 
 std::uint64_t find_address(const char* file_path, std::string func_name) {
 
         std::uint64_t addr;
@@ -145,7 +147,6 @@ void handler(int signal, siginfo_t* info, void* cont) {
 
                 // different processing for read/write
                 // with writing to memory, the writes will be outside of the current stack frame : stack base -> current pointer 
-                if ();
                         
                 //returning the value 
                 if (return_reached) {
@@ -177,10 +178,10 @@ void handler(int signal, siginfo_t* info, void* cont) {
                         case UD_Imov:
                                 fprintf(stderr, "writing to memory\n");
                                 // memory writes
-                                just_read (&ud_obj, 1, context);
+                                //if not writable call write
+                                if (just_read (&ud_obj, 1, context)) fprintf(stderr, "sucess"); 
                                 break; 
                         default: break;
-                      
                 }
 
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
@@ -195,58 +196,81 @@ void handler(int signal, siginfo_t* info, void* cont) {
         }
 }
 
-bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context, ) {
-        uint64_t* mem_address;
+bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
+        uint64_t mem_address;
         const ud_operand_t* instrct = ud_insn_opr(obj, n); 
-        if (instrct.type == UD_OP_MEM) { // 1 is the right side of the instruction (destination)
-                base = get_register(instrct.base, context); 
-                index = get_register(instrct.index, context);
-                mem_address = instrct.offset + base + (index*instrct.scale);
+        if (instrct->type == UD_OP_MEM) { // 1 is the right side of the instruction (destination)
+
+                int64_t offset; 
+                switch(instrct->offset) {
+                case 8:
+                        offset = (int8_t) instrct->lval.sbyte;
+                        break; 
+                case 16:
+                        offset = (int16_t) instrct->lval.sword;
+                        break;
+                case 32:
+                        offset = (int32_t) instrct->lval.sdword;
+                        break;
+                default:
+                        offset = (int64_t) instrct->lval.sqword;
+                        break;
+                }
+
+                mem_address = offset +
+                              get_register(instrct->base, context) +
+                              (get_register(instrct->index, context)*
+                                        instrct->scale);
+
+                uint64_t curr_address = context->uc_mcontext.gregs[REG_RIP];
+
+                return ((uintptr_t) stack > mem_address &&
+                        curr_address < mem_address); 
         }
 
-        
+        return true;
 }
 
 uint64_t get_register(ud_type_t obj, ucontext_t* context) {
 
         switch(obj) {
-        case ud_type_t.UD_R_RAX:
+        case UD_R_RAX:
                 return context->uc_mcontext.gregs[REG_RAX];
-        case ud_type_t.UD_R_RCX:
+        case UD_R_RCX:
                 return context->uc_mcontext.gregs[REG_RCX];
-        case ud_type_t.UD_R_RDX:
+        case UD_R_RDX:
                 return context->uc_mcontext.gregs[REG_RDX];
-        case ud_type_t.UD_R_RBX:
+        case UD_R_RBX:
                 return context->uc_mcontext.gregs[REG_RBX];
-        case ud_type_t.UD_R_RSP:
+        case UD_R_RSP:
                 return context->uc_mcontext.gregs[REG_RSP];
-        case ud_type_t.UD_R_RBP:
+        case UD_R_RBP:
                 return context->uc_mcontext.gregs[REG_RBP];
-        case ud_type_t.UD_R_RSI:
+        case UD_R_RSI:
                 return context->uc_mcontext.gregs[REG_RSI];
-        case ud_type_t.UD_R_RDI:
+        case UD_R_RDI:
                 return context->uc_mcontext.gregs[REG_RDI];             
-        case ud_type_t.UD_R_R8:
+        case UD_R_R8:
                 return context->uc_mcontext.gregs[REG_R8];
-        case ud_type_t.UD_R_R9:
+        case UD_R_R9:
                 return context->uc_mcontext.gregs[REG_R9];              
-        case ud_type_t.UD_R_R10:
+        case UD_R_R10:
                 return context->uc_mcontext.gregs[REG_R10];             
-        case ud_type_t.UD_R_R11:
+        case UD_R_R11:
                 return context->uc_mcontext.gregs[REG_R11];
-        case ud_type_t.UD_R_R12:
+        case UD_R_R12:
                 return context->uc_mcontext.gregs[REG_R12];
-        case ud_type_t.UD_R_R13:
+        case UD_R_R13:
                 return context->uc_mcontext.gregs[REG_R13];
-        case ud_type_t.UD_R_R14:
+        case UD_R_R14:
                 return context->uc_mcontext.gregs[REG_R14];
-        case ud_type_t.UD_R_R15:
-                return context->uc_mcontext.gregs[REG_15];
-        case ud_type_t.UD_NONE:
+        case UD_R_R15:
+                return context->uc_mcontext.gregs[REG_R15];
+        case UD_NONE:
                 return 0;
         default:
                 fprintf(stderr, "32, 16 and 8bit registers are not supported yet");
-                fprintf(sderr, obj); //?
+                //fprintf(stderr, obj); //?
                 exit(2); 
         }
 }
