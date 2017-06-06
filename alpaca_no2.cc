@@ -29,6 +29,7 @@ std::uint64_t offset;
 std::uint64_t address; 
 uint8_t remembered_byte;
 bool return_reached; 
+int call_count;
 
 void shut_down(); 
 std::uint64_t find_address(const char* file_path, std::string func_name) {
@@ -40,29 +41,29 @@ std::uint64_t find_address(const char* file_path, std::string func_name) {
                 fprintf(stderr, "%s: %s\n", file_path, strerror(errno));
                 exit(2);
         }
-        
+
         elf::elf f(elf::create_mmap_loader(read_fd));
         for (auto &sec : f.sections()) {
                 if (sec.get_hdr().type != elf::sht::symtab) continue;
 
-                printf("Section '%s':\n", sec.get_name().c_str());
-                printf("%-16s %-5s %-7s %-5s %s %s\n",
-                       "Address", "Size", "Binding", "Index", "Name", "Type");
-                
+                fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
+                fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
+                                "Address", "Size", "Binding", "Index", "Name", "Type");
+
                 for (auto sym : sec.as_symtab()) {
                         auto &d = sym.get_data();
                         if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
 
                         //probably will end up writing to log_fd
-                        printf("0x%-16lx %-5lx %-7s %5s %s %s\n",
-                               offset + d.value, d.size,
-                               to_string(d.binding()).c_str(),
-                               to_string(d.shnxd).c_str(),
-                               sym.get_name().c_str(),
-                               to_string(d.type()).c_str());
+                        fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
+                                        offset + d.value, d.size,
+                                        to_string(d.binding()).c_str(),
+                                        to_string(d.shnxd).c_str(),
+                                        sym.get_name().c_str(),
+                                        to_string(d.type()).c_str());
 
                         addr = offset + d.value; 
-               }
+                }
         }
 
         return addr; 
@@ -74,8 +75,8 @@ void single_step(std::uint64_t func_address) {
 
         //making the page writable, readable and executable
         if (-1 == mprotect((void*) page_start, PAGE_SIZE, PROT_READ| PROT_WRITE| PROT_EXEC)) {
-            fprintf(stderr, "%s\n", strerror(errno));
-            exit(2); 
+                fprintf(stderr, "%s\n", strerror(errno));
+                exit(2); 
         }
 
 
@@ -87,11 +88,11 @@ void single_step(std::uint64_t func_address) {
 //returns the entry for the main executable on first execution of callback
 // or info->dlpi_name == "\0" ?
 static int callback(struct dl_phdr_info *info, size_t size, void *data) {
-        
+
         static int run = 0;
 
         if (run) return 0;
-        
+
         offset = info->dlpi_addr; 
         run = 1;
         return 0; 
@@ -101,22 +102,24 @@ typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 void handler(int signal, siginfo_t* info, void* cont) {
+        fprintf(stderr, "trap handler\n");
         if (signal != SIGTRAP) exit(2);
-        //printf("caught SIGTRAP\n");
+        //fprintf(stderr, "caught SIGTRAP\n");
 
         static int run = 0;
-         
+
         // process assembly instruction info w m_context
         ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
-        //printf("hi\n");
+        //fprintf(stderr, "hi\n");
         //address of the next assembly instruction to be executed
-        //printf("Stack starts at: 0x%llx\n", context->uc_mcontext.gregs[REG_RBP]);
-        //printf("hi2\n");
+        //fprintf(stderr, "Stack starts at: 0x%llx\n", context->uc_mcontext.gregs[REG_RBP]);
+        //fprintf(stderr, "hi2\n");
 
-        
+
         if (remembered_byte == 0x55) {
+                fprintf(stderr, "if\n");
                 if (!run) {
-                        printf("Entered only once\n");
+                        fprintf(stderr, "Entered only once\n");
                         // Fake the push %rbp instruction
                         uint64_t* stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
                         uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
@@ -126,7 +129,7 @@ void handler(int signal, siginfo_t* info, void* cont) {
 
                         run = 1; 
                 }
-              
+
                 ud_t ud_obj;
                 ud_init(&ud_obj);
 
@@ -135,40 +138,59 @@ void handler(int signal, siginfo_t* info, void* cont) {
                 ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
 
                 ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
-                ud_disassemble(&ud_obj);
+                fprintf(stderr, "disassembling\n");
+                fprintf(stderr, "disassembled: %x\n", ud_disassemble(&ud_obj));
 
+                fprintf(stderr, "rax: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
                 if (return_reached) {
                         // RAX won't hold large values ! 
-                        //   printf("return value: %d\n", *(int*)(context->uc_mcontext.gregs[REG_RAX]));
-                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-                        return;
+                        fprintf(stderr, "return reached: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
+                        call_count--;
+                        return_reached = false;
+                        if(call_count < 0) {
+                                fprintf(stderr, "call_count < 0, ending\n");
+                                context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+                                return;
+                        }
                 }
-                
-                printf("here: %s\n", ud_insn_asm(&ud_obj));
-                if (ud_insn_mnemonic(&ud_obj) == UD_Iret) {
-                        printf("found return\n");
-                        return_reached = true;
+
+                fprintf(stderr, "here: %s\n", ud_insn_asm(&ud_obj));
+                fprintf(stderr, "off: %lx\n", ud_insn_off(&ud_obj));
+                fprintf(stderr, "hex: %s\n", ud_insn_hex(&ud_obj));
+                switch (ud_insn_mnemonic(&ud_obj)) {
+                        case UD_Iret:
+                                fprintf(stderr, "found return\n");
+                                return_reached = true;
+                                break;
+
+                        case UD_Icall:
+                                fprintf(stderr, "found call\n");
+                                call_count++;
+                                break;
+                        default: break;
                 }
 
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
+                fprintf(stderr, "end if\n");
                 //check it only reads 
-         } else {
+        } else {
+                fprintf(stderr, "else\n");
                 // Put back the original byte (0x55 only)
                 //uint8_t* ip = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP] - 1);
                 //*ip = 0x55;
                 //context->uc_mcontext.gregs[REG_RIP]--;
-         }
+        }
 }
 
 void seg_handler(int sig, siginfo_t* info, void* context) {
 
         if (sig != SIGSEGV) {
-                printf("should not be here\n");
+                fprintf(stderr, "should not be here\n");
                 exit(2); 
         };
 
-        printf("in SEG handler\n");
-        printf("SEGFAULT address: %p\n", info->si_addr);
+        fprintf(stderr, "in SEG handler\n");
+        fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
         int j, nptrs; 
         void* buffer[200];
         char** strings;
@@ -187,7 +209,9 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 
 
 static int wrapped_main(int argc, char** argv, char** env) {
-        printf("Entered main wrapper\n");
+        fprintf(stderr, "Entered main wrapper\n");
+
+        call_count = 0;
 
         //set up for the signal handler
         struct sigaction sig_action, debugger;
@@ -210,16 +234,16 @@ static int wrapped_main(int argc, char** argv, char** env) {
         //getting the address of the main executable for the offset 
         dl_iterate_phdr(callback, NULL);
 
-        printf("finding address\n");
+        fprintf(stderr, "finding address\n");
         address = find_address("/proc/self/exe", func_name);
 
-        printf("single stepping\n");
+        fprintf(stderr, "single stepping\n");
         single_step(address);
 
-        printf("running og main\n");
+        fprintf(stderr, "running og main\n");
         og_main(argc, argv, env);
 
-        printf("exiting\n");
+        fprintf(stderr, "exiting\n");
         return 0; 
 }
 
@@ -227,11 +251,11 @@ static int wrapped_main(int argc, char** argv, char** env) {
 //Code retrieved from https://github.com/plasma-umass/coz/blob/master/libcoz/libcoz.cpp
 //                and https://github.com/ccurtsinger/interpose
 extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void (*init)(),
-                               void (*fini)(), void (*rtld_fini)(), void* stack_end) {
+                void (*fini)(), void (*rtld_fini)(), void* stack_end) {
 
         //Find original __libc_start_main
         auto og_libc_start_main = (decltype(__libc_start_main)*)dlsym(RTLD_NEXT, "__libc_start_main");
-        
+
         //Save original main function
         og_main = main_fn;
 
