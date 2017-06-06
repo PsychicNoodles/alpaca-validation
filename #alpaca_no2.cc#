@@ -139,7 +139,7 @@ void handler(int signal, siginfo_t* info, void* cont) {
 
                 if (return_reached) {
                         // RAX won't hold large values ! 
-                        //   printf("return value: %d\n", *(int*)(context->uc_mcontext.gregs[REG_RAX]));
+                        printf("return value: %d\n", *(int*)(context->uc_mcontext.gregs[REG_RAX]));
                         context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
                         return;
                 }
