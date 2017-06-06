@@ -227,6 +227,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 call_count++;
                                 break;
 
+                                //we might need to scope this better: should cover all instructions
+                                //that could write to memory 
                         default:
                                 fprintf(stderr, "distinguishing between read and write\n");
                                 if (just_read(&ud_obj, 1, context))
@@ -255,32 +257,32 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
  *@returns bool: true if no writes to memory; false otherwise. 
  */
 bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
-        const ud_operand_t* instrct = ud_insn_opr(obj, n);
+        const ud_operand_t* operand = ud_insn_opr(obj, n);
         
-        if (instrct->type == UD_OP_MEM) { 
+        if (operand->type == UD_OP_MEM) { 
                 uint64_t mem_address; //address of the destination
                 
                 int64_t offset; //displacement offset 
-                switch(instrct->offset) {
+                switch(operand->offset) {
                 case 8:
-                        offset = (int8_t) instrct->lval.sbyte;
+                        offset = (int8_t) operand->lval.sbyte;
                         break; 
                 case 16:
-                        offset = (int16_t) instrct->lval.sword;
+                        offset = (int16_t) operand->lval.sword;
                         break;
                 case 32:
-                        offset = (int32_t) instrct->lval.sdword;
+                        offset = (int32_t) operand->lval.sdword;
                         break;
                 default:
-                        offset = (int64_t) instrct->lval.sqword;
+                        offset = (int64_t) operand->lval.sqword;
                         break;
                 }
 
                 //calculating the memory address based on assembly register information 
                 mem_address = offset +
-                              get_register(instrct->base, context) +
-                              (get_register(instrct->index, context)*
-                                        instrct->scale);
+                              get_register(operand->base, context) +
+                              (get_register(operand->index, context)*
+                                        operand->scale);
 
                 //if the instruction tries to access memory outside of the current
                 //stack frame, we know it writes to memory 
