@@ -3,14 +3,9 @@
 
 //citations: modified example code from
 //https://github.com/aclements/libelfin/blob/master/examples/dump-syms.cc
-
-
-
-
 #include "elf++.hh" //parsing the binary file 
 #include "interpose.hh" //interposing exit functions  
 #include <udis86.h> //interpreting assembly instructions
-
 
 #include <cstdint>
 #include <cstdio>
@@ -62,7 +57,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont);
  * @return the (virtual) address of the function in memory
  */
 uint64_t find_address(const char* file_path, string func_name) {
-
         uint64_t addr;
 
         int read_fd = open(file_path, O_RDONLY);
@@ -160,7 +154,6 @@ void initialize_ud_obj(ud_t* ud_obj) {
  * void* cont: context of the instruction with general register information 
  */
 void trap_handler(int signal, siginfo_t* info, void* cont) {
-
         if (signal != SIGTRAP) {
                 fprintf(stderr, "Signal received not SIGTRAP\n");
                 exit(2);
@@ -229,17 +222,15 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
                         default:
                                 fprintf(stderr, "distinguishing between read and write\n");
-                                if (just_read(&ud_obj, 1, context))
-                                        fprintf(stderr, "reading\n");
-                                else
-                                        fprintf(stderr, "writing not supported yet\n");
+                                if (just_read(&ud_obj, 1, context)) fprintf(stderr, "reading\n");
+                                else fprintf(stderr, "writing not supported yet\n");
                                 break; 
                 }
 
                 //seting the TRAP FLAG for future single-stepping 
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
         } else {
-                fprintf(stderr, "else\n");
+                fprintf(stderr, "func_start_byte != 0x55, to be implemented\n");
                 // Put back the original byte (0x55 only)
                 //uint8_t* ip = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP] - 1);
                 //*ip = 0x55;
@@ -271,16 +262,18 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
                 case 32:
                         offset = (int32_t) instrct->lval.sdword;
                         break;
-                default:
+                case 64:
                         offset = (int64_t) instrct->lval.sqword;
                         break;
+                default:
+                        offset = 0;
                 }
 
                 //calculating the memory address based on assembly register information 
                 mem_address = offset +
-                              get_register(instrct->base, context) +
-                              (get_register(instrct->index, context)*
-                                        instrct->scale);
+                        get_register(instrct->base, context) +
+                        (get_register(instrct->index, context)*
+                         instrct->scale);
 
                 //if the instruction tries to access memory outside of the current
                 //stack frame, we know it writes to memory 
@@ -290,6 +283,7 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
                         instr_ptr < mem_address); 
         }
 
+        //if the instruction doesn't touch memory then it's fine
         return true;
 }
 
@@ -299,7 +293,6 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
  * ucontext_t* context: from the signal handler with general register information  
  */
 uint64_t get_register(ud_type_t obj, ucontext_t* context) {
-
         switch(obj) {
         case UD_R_RAX:
                 return context->uc_mcontext.gregs[REG_RAX];
