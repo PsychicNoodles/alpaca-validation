@@ -32,6 +32,9 @@ uint64_t offset; //offset of the main exectuable
 uint8_t remembered_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
 
+typedef int (*main_fn_t)(int, char**, char**);
+main_fn_t og_main;
+
 //function declarations
 static int callback(struct dl_phdr_info *info, size_t size, void *data);
 uint64_t find_address(const char* file_path, string func_name);
@@ -41,8 +44,13 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context);
 void shut_down();
 void trap_handler(int signal, siginfo_t* info, void* cont);
 
+/**
+ * Locates the address of the target function
+ * file_path: the path to the binary file
+ * func_name: the name of the target function
+ * @return the (virtual) address of the function in memory
+ */
 uint64_t find_address(const char* file_path, string func_name) {
-
         uint64_t addr;
 
         int read_fd = open(file_path, O_RDONLY);
@@ -55,14 +63,17 @@ uint64_t find_address(const char* file_path, string func_name) {
         for (auto &sec : f.sections()) {
                 if (sec.get_hdr().type != elf::sht::symtab) continue;
 
+                /*
                 fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
                 fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
                                 "Address", "Size", "Binding", "Index", "Name", "Type");
+                                */
 
                 for (auto sym : sec.as_symtab()) {
                         auto &d = sym.get_data();
                         if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
 
+                        /*
                         //probably will end up writing to log_fd
                         fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
                                         offset + d.value, d.size,
@@ -70,6 +81,7 @@ uint64_t find_address(const char* file_path, string func_name) {
                                         to_string(d.shnxd).c_str(),
                                         sym.get_name().c_str(),
                                         to_string(d.type()).c_str());
+                                        */
 
                         addr = offset + d.value; 
                 }
@@ -78,12 +90,15 @@ uint64_t find_address(const char* file_path, string func_name) {
         return addr; 
 }
 
+/**
+ * Enables single-stepping (instruction by instruction) through the function
+ * func_address: (virtual) address of the function in memory
+ */
 void single_step(uint64_t func_address) {
-
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
         //making the page writable, readable and executable
-        if (-1 == mprotect((void*) page_start, PAGE_SIZE, PROT_READ| PROT_WRITE| PROT_EXEC)) {
+        if (mprotect((void*) page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) == -1) {
                 fprintf(stderr, "%s\n", strerror(errno));
                 exit(2); 
         }
@@ -94,9 +109,17 @@ void single_step(uint64_t func_address) {
         remembered_byte = function_bytes[0];
         function_bytes[0] = 0xCC;
 }
-//returns the entry for the main executable on first execution of callback
-// or info->dlpi_name == "\0" ?
+
+/**
+ * Accesses the entry for the main executable on first execution of callback
+ * Passed as a parameter to dl_iterate_phdr()
+ * dl_phdr_info: a pointer to a structure containing info about the shared object 
+ * size: size of the shared object 
+ * data: a copy of value passed by dl_iterate_phdr();
+ * @returns a non-zero value until there are no shared objects to be processed. 
+ */
 static int callback(struct dl_phdr_info *info, size_t size, void *data) {
+        // or info->dlpi_name == "\0" if first run doesn't work ?
 
         static int run = 0;
 
@@ -107,10 +130,15 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
         return 0; 
 }
 
-typedef int (*main_fn_t)(int, char**, char**);
-main_fn_t og_main;
-
-void handler(int signal, siginfo_t* info, void* cont) {
+/**
+ * Initially catches the SIGTRAP signal cause by INT3(0xCC) followed by catching a TRAP FLAG
+ * Analyzes next instruction's effects by parsing assembly information 
+ * Takes in regular signal_handler parameters when called by sigaction
+ * signal: only processes SIGTRAP signal 
+ * siginfo_t* info: information about the instruction which caused the signal 
+ * void* cont: context of the instruction with general register informatio
+ */
+void trap_handler(int signal, siginfo_t* info, void* cont) {
         fprintf(stderr, "trap handler\n");
         if (signal != SIGTRAP) exit(2);
         //fprintf(stderr, "caught SIGTRAP\n");
@@ -203,6 +231,13 @@ void handler(int signal, siginfo_t* info, void* cont) {
         }
 }
 
+/**
+ * Checks if the next instruction will only read or also write to memory
+ * ud_t* obj: pointer to the object that disassembles the next instruction 
+ * n: the position of the operand we inspect; 0 for source, 1 for destination
+ * context: context from the handler with general register information 
+ * @returns bool: true if no writes to memory; false otherwise. 
+ */
 bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
         uint64_t mem_address;
         const ud_operand_t* instrct = ud_insn_opr(obj, n); 
@@ -238,6 +273,11 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
         return true;
 }
 
+/*
+ * Translates from udis's register enum's to register addresses
+ * obj: object containing the instruction to be disassembled
+ * context: from the signal handler with general register information  
+ */
 uint64_t get_register(ud_type_t obj, ucontext_t* context) {
 
         switch(obj) {
@@ -282,6 +322,9 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
         }
 }
 
+/**
+ * A temporary gdb workaround debugger.
+ */
 void seg_handler(int sig, siginfo_t* info, void* context) {
 
         if (sig != SIGSEGV) {
@@ -305,25 +348,28 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
         backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
 }
 
-
-
-
+/**
+ * Fake main that intercepts the main of a program running the analyzer tool
+ * takes in the arguments passed on running 
+ */
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
 
         //set up for the signal handler
         struct sigaction sig_action, debugger;
         memset(&sig_action, 0, sizeof(sig_action));
-        sig_action.sa_sigaction = handler;
+        sig_action.sa_sigaction = trap_handler;
         sigemptyset(&sig_action.sa_mask);
         sig_action.sa_flags = SA_SIGINFO;
         sigaction(SIGTRAP, &sig_action, 0);
 
+        /*
         memset(&debugger, 0, sizeof(debugger));
         debugger.sa_sigaction = seg_handler;
         sigemptyset(&debugger.sa_mask);
         debugger.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &debugger, 0);
+        */
 
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
@@ -345,9 +391,11 @@ static int wrapped_main(int argc, char** argv, char** env) {
         return 0; 
 }
 
-
-//Code retrieved from https://github.com/plasma-umass/coz/blob/master/libcoz/libcoz.cpp
-//                and https://github.com/ccurtsinger/interpose
+/**
+ * Intercepts __libc_start_main call to override main of the program calling the analyzer tool
+ * Code retrieved from https://github.com/plasma-umass/coz/blob/master/libcoz/libcoz.cpp
+ *                 and https://github.com/ccurtsinger/interpose
+ */
 extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void (*init)(),
                 void (*fini)(), void (*rtld_fini)(), void* stack_end) {
 
