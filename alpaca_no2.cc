@@ -179,6 +179,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         ud_set_mode(&ud_obj, 64);
                         ud_set_syntax(&ud_obj, UD_SYN_ATT);
                         ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
+
+                        run = 1;
                 }
 
                 //grabs next instruction to disassemble 
@@ -189,10 +191,10 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 if (return_reached) {
                         call_count--;
                         return_reached = false;
-                        //
+                        fprintf(stderr, "rax value: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
                         //each call may have its own return, so final return will give a negative count
                         if(call_count < 0) {
-                                fprintf(stderr, "rax value: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
+                                fprintf(stderr, "returned from target function\n");
                                 //logging 
                                 file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
                                 file << context->uc_mcontext.gregs[REG_RAX];
@@ -207,7 +209,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
                 switch (ud_insn_mnemonic(&ud_obj)) {
                         case UD_Iret: case UD_Iretf:
-                                fprintf(stderr, "special case: ret\n");
+                                fprintf(stderr, "special case: ret (call_count: %d)\n", call_count);
                                 return_reached = true;
                                 break;
 
@@ -362,7 +364,7 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
                 return 0;
         default:
                 fprintf(stderr, "32, 16 and 8bit registers are not supported yet\n");
-                exit(2); 
+                return 0; 
         }
 }
 
@@ -423,14 +425,14 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 sig_action.sa_flags = SA_SIGINFO;
                 sigaction(SIGTRAP, &sig_action, 0);
 
-                /*
+                
                 //for the debugger
                 memset(&debugger, 0, sizeof(debugger));
                 debugger.sa_sigaction = seg_handler;
                 sigemptyset(&debugger.sa_mask);
                 debugger.sa_flags = SA_SIGINFO;
                 sigaction(SIGSEGV, &debugger, 0);
-                */
+                
                 single_step(func_address);
                 
         } else {
