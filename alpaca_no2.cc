@@ -191,13 +191,17 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 if (return_reached) {
                         call_count--;
                         return_reached = false;
-                        fprintf(stderr, "rax value: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
+                        uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
+                        fprintf(stderr, "rax value: %lu\n", rax);
                         //each call may have its own return, so final return will give a negative count
                         if(call_count < 0) {
                                 fprintf(stderr, "returned from target function\n");
                                 //logging 
                                 file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
-                                file << context->uc_mcontext.gregs[REG_RAX];
+                                uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
+                                uint32_t lval = htonl(rax & 0xFFFFFFFF);
+                                file.write((char*) &hval, sizeof(hval));
+                                file.write((char*) &lval, sizeof(lval));
                                 file.close();
                                 //stops single-stepping
                                 context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
@@ -415,8 +419,6 @@ static int wrapped_main(int argc, char** argv, char** env) {
         uint64_t func_address = find_address("/proc/self/exe", func_name);
         
         if (mode == 0) {
-                fprintf(stderr, "Entered main wrapper\n");
-
                 //set up for the SIGTRAP signal handler
                 struct sigaction sig_action, debugger;
                 memset(&sig_action, 0, sizeof(sig_action));
@@ -436,17 +438,23 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 single_step(func_address);
                 
         } else {
-
                 string line; 
                 file.open("read-logger", std::fstream::in | std::fstream::binary);
                 uint32_t buffer[2] = {0};
                 file.read((char*)buffer, sizeof(buffer));
+                fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
 
                 ret = (uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]);
+
+                fprintf(stderr, "%d\n", ((int(*)()) func_address)());
+                fprintf(stderr, "return in ret %d\n", (int) ret); 
+                fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
                 new((void*)func_address) X86Jump((void*)disabled_func);
+                fprintf(stderr, "jump inserted\n");
                 file.close();
         }
 
+        fprintf(stderr, "starting main\n");
         og_main(argc, argv, env);
         return 0; 
 }
