@@ -197,7 +197,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 fprintf(stderr, "assembly instruction: %s\n", ud_insn_asm(&ud_obj));
 
                 switch (ud_insn_mnemonic(&ud_obj)) {
-                        case UD_Iret:
+                        case UD_Iret: case UD_Iretf:
                                 fprintf(stderr, "special case: ret\n");
                                 return_reached = true;
                                 break;
@@ -207,20 +207,36 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 call_count++;
                                 break;
 
-                        //known safe operations
-                        case UD_Ijmp:
-                                fprintf(stderr, "safe op\n");
-                                break;
-                        
-                        //known potential writes with 1 operand
-                        case UD_Iinc:
-                                fprintf(stderr, "known 1 operand\n");
-                                test_operand(&ud_obj, 0, context);
-                                break;
+                        //readonly 1 operand instructions
+                        case UD_Iclflush: case UD_Iclts: case UD_Iffree: case UD_Iffreep:
+                        case UD_Ifld1: case UD_Ifldcw: case UD_Ifldenv: case UD_Ifldl2e:
+                        case UD_Ifldl2t: case UD_Ifldlg2: case UD_Ifldln2: case UD_Ifldz:
+                        case UD_Iftst: case UD_Ifxam: case UD_Ifxtract: case UD_Igetsec:
+                        case UD_Iint1: case UD_Iinto: case UD_Ijb: case UD_Ijbe: case UD_Ijecxz:
+                        case UD_Ijl: case UD_Ijmp: case UD_Ijae: case UD_Ija: case UD_Ijge:
+                        case UD_Ijno: case UD_Ijnp: case UD_Ijns: case UD_Ijnz: case UD_Ijo:
+                        case UD_Ijp: case UD_Ijs: case UD_Ijz: case UD_Ilahf: case UD_Ildmxcsr:
+                        case UD_Ileave: case UD_Inop: case UD_Ipop: case UD_Ipopfq:
+                        case UD_Iprefetchnta: case UD_Iprefetcht0: case UD_Iprefetcht1:
+                        case UD_Iprefetcht2: case UD_Ipush: case UD_Ipushfq: case UD_Irep:
+                        case UD_Irepne: case UD_Irsm: case UD_Isahf: case UD_Isetb: case UD_Isetbe:
+                        case UD_Isetl: case UD_Isetle: case UD_Iseto: case UD_Isetp: case UD_Isets:
+                        case UD_Isetz: case UD_Istmxcsr: case UD_Iverr: case UD_Iverw:
+                        case UD_Ivmclear: case UD_Ivmptrld: case UD_Ivmptrst: case UD_Ivmxon:
+                              fprintf(stderr, "known readonly 1 op instruction\n");
+                              break;
+                        //potential write 1 operand instructions
+                        case UD_Idec: case UD_If2xm1: case UD_Ifabs: case UD_Ifchs: case UD_Ifcos:
+                        case UD_Ifnstcw: case UD_Ifnstenv: case UD_Ifnstsw: case UD_Ifptan:
+                        case UD_Ifrndint: case UD_Ifsin: case UD_Ifsincos: case UD_Ifsqrt:
+                        case UD_Iinc: case UD_Iinvlpg: case UD_Ineg: case UD_Inot:
+                              fprintf(stderr, "known potential write 1 op instruction\n");
+                              test_operand(&ud_obj, 1, context);
+                              break;
                         
                         //known potential writes with 2 operands
                         case UD_Imov:
-                                fprintf(stderr, "known 2 operands\n");
+                                fprintf(stderr, "known potential write 2 op instruction\n");
                                 test_operand(&ud_obj, 1, context);
                                 break;
 
