@@ -36,6 +36,7 @@
 using std::string;
 
 std::fstream file; //for logging later
+uint64_t func_address; //the address of the target function
 uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
@@ -46,7 +47,7 @@ main_fn_t og_main;
 
 //function declarations
 static int callback(struct dl_phdr_info *info, size_t size, void *data);
-uint64_t find_address(const char* file_path, string func_name);
+void find_address(const char* file_path, string func_name);
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context);
@@ -58,9 +59,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont);
  * Locates the address of the target function
  * file_path: the path to the binary file
  * func_name: the name of the target function
- * @return the (virtual) address of the function in memory
  */
-uint64_t find_address(const char* file_path, string func_name) {
+void find_address(const char* file_path, string func_name) {
         uint64_t addr;
 
         int read_fd = open(file_path, O_RDONLY);
@@ -97,7 +97,7 @@ uint64_t find_address(const char* file_path, string func_name) {
                 }
         }
 
-        return addr;
+        func_address = addr;
         //potential problem with multiple entries in the table for the same function? 
 }
 
@@ -105,7 +105,7 @@ uint64_t find_address(const char* file_path, string func_name) {
  * Enables single-stepping (instruction by instruction) through the function
  * func_address: (virtual) address of the function in memory
  */
-void single_step(uint64_t func_address) {
+void single_step() {
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
         //making the page writable, readable and executable
@@ -151,6 +151,7 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
  * void* cont: context of the instruction with general register informatio
  */
 void trap_handler(int signal, siginfo_t* info, void* cont) {
+        fprintf(stderr, "in trap handler\n");
         if (signal != SIGTRAP) {
                 fprintf(stderr, "Signal received not SIGTRAP\n");
                 exit(2);
@@ -165,6 +166,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
         if (func_start_byte == 0x55) {
+                fprintf(stderr, "func_start_byte is 0x55\n");
                 if (!run) {
                         //Faking the %rbp stack push to account for the 0xCC byte overwrite
                         stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
@@ -181,6 +183,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
 
                         run = 1;
+                        ((uint8_t*)func_address)[0] = func_start_byte;
                 }
 
                 //grabs next instruction to disassemble 
@@ -197,14 +200,18 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         if(call_count < 0) {
                                 fprintf(stderr, "returned from target function\n");
                                 //logging 
-                                file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
                                 uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
                                 uint32_t lval = htonl(rax & 0xFFFFFFFF);
                                 file.write((char*) &hval, sizeof(hval));
                                 file.write((char*) &lval, sizeof(lval));
-                                file.close();
+
                                 //stops single-stepping
                                 context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+                                
+                                single_step();
+
+                                run = 0;
+                                call_count = 0;
                                 return;
                         }
                 }
@@ -272,7 +279,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 //set TRAP flag to continue single-stepping
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
         } else {
-                fprintf(stderr, "func_start_byte was not 0x55\n");
+                fprintf(stderr, "func_start_byte was not 0x55, is %p\n", (void*)func_start_byte);
                 // Put back the original byte (0x55 only)
         }
 }
@@ -416,7 +423,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         argv[argc-2] = NULL;
 
         dl_iterate_phdr(callback, NULL);
-        uint64_t func_address = find_address("/proc/self/exe", func_name);
+        find_address("/proc/self/exe", func_name);
         
         if (mode == 0) {
                 //set up for the SIGTRAP signal handler
@@ -435,7 +442,9 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 debugger.sa_flags = SA_SIGINFO;
                 sigaction(SIGSEGV, &debugger, 0);
                 
-                single_step(func_address);
+                single_step();
+
+                file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
                 
         } else {
                 string line; 
@@ -461,11 +470,12 @@ static int wrapped_main(int argc, char** argv, char** env) {
         
                 new((void*)func_address) X86Jump((void*)disabled_func);
                 fprintf(stderr, "jump inserted\n");
-                file.close();
         }
 
         fprintf(stderr, "starting main\n");
         og_main(argc, argv, env);
+        file.close();
+        
         return 0; 
 }
 
