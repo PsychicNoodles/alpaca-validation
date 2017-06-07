@@ -29,7 +29,7 @@ using std::string;
 
 int log_fd; //for logging later
 uint64_t offset; //offset of the main exectuable
-uint8_t remembered_byte; //the byte overwrtitten with 0xCC for single-stepping
+uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
 
 typedef int (*main_fn_t)(int, char**, char**);
@@ -105,9 +105,8 @@ void single_step(uint64_t func_address) {
 
 
         //setting the last byte to 0xCC causes a SIGTRAP signal for single-stepping
-        uint8_t* function_bytes = (uint8_t*)func_address;
-        remembered_byte = function_bytes[0];
-        function_bytes[0] = 0xCC;
+        func_start_byte = ((uint8_t*)func_address)[0];
+        ((uint8_t*)func_address)[0] = 0xCC;
 }
 
 /**
@@ -155,7 +154,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         //fprintf(stderr, "hi2\n");
 
 
-        if (remembered_byte == 0x55) {
+        if (func_start_byte == 0x55) {
                 fprintf(stderr, "if\n");
                 if (!run) {
                         fprintf(stderr, "Entered only once\n");
