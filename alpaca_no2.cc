@@ -24,6 +24,7 @@
 #include <udis86.h>
 
 #define PAGE_SIZE 4096
+#define MAX_OPERANDS 126
 
 using std::string;
 
@@ -42,6 +43,7 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context);
 void shut_down();
+void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 
 /**
@@ -129,6 +131,11 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
         return 0; 
 }
 
+void test_operand(ud_t* obj, int n, ucontext_t* context) {
+        if (just_read(obj, n, context)) fprintf(stderr, "read in operand %d\n", n);
+        else fprintf(stderr, "write in operand %d -- not supported yet\n", n);
+}
+
 /**
  * Initially catches the SIGTRAP signal cause by INT3(0xCC) followed by catching a TRAP FLAG
  * Analyzes next instruction's effects by parsing assembly information 
@@ -138,27 +145,18 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
  * void* cont: context of the instruction with general register informatio
  */
 void trap_handler(int signal, siginfo_t* info, void* cont) {
-        fprintf(stderr, "trap handler\n");
         if (signal != SIGTRAP) exit(2);
-        //fprintf(stderr, "caught SIGTRAP\n");
 
         static int run = 0;
         static bool return_reached = false;
         static int call_count = 0;
+        static ud_t ud_obj;
 
-        // process assembly instruction info w m_context
         ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
-        //fprintf(stderr, "hi\n");
-        //address of the next assembly instruction to be executed
-        //fprintf(stderr, "Stack starts at: 0x%llx\n", context->uc_mcontext.gregs[REG_RBP]);
-        //fprintf(stderr, "hi2\n");
-
 
         if (func_start_byte == 0x55) {
-                fprintf(stderr, "if\n");
                 if (!run) {
-                        fprintf(stderr, "Entered only once\n");
-                        // Fake the push %rbp instruction
+                        //Faking the %rbp stack push to account for the 0xCC byte overwrite
                         stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
                         uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
                         stack--;
@@ -166,67 +164,79 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack;
 
                         run = 1; 
+
+                        ud_init(&ud_obj);
+                        ud_set_mode(&ud_obj, 64);
+                        ud_set_syntax(&ud_obj, UD_SYN_ATT);
+                        ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
                 }
 
-                ud_t ud_obj;
-                ud_init(&ud_obj);
-
-                ud_set_mode(&ud_obj, 64);
-                ud_set_syntax(&ud_obj, UD_SYN_ATT);
-                ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
-
                 ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
-                fprintf(stderr, "disassembling\n");
-                fprintf(stderr, "disassembled: %x\n", ud_disassemble(&ud_obj));
+                ud_disassemble(&ud_obj);
 
-                // different processing for read/write
-                // with writing to memory, the writes will be outside of the current stack frame : stack base -> current pointer 
-                        
-                //returning the value 
+                //if end of a function is reached in the next step  
                 if (return_reached) {
-                        // RAX won't hold large values ! 
-                        fprintf(stderr, "return reached: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
                         call_count--;
                         return_reached = false;
+                        //
+                        //each call may have its own return, so final return will give a negative count
                         if(call_count < 0) {
-                                fprintf(stderr, "call_count < 0, ending\n");
-                                fprintf(stderr, "rax: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
+                                fprintf(stderr, "rax value: %lld\n", context->uc_mcontext.gregs[REG_RAX]);
+                                //stops single-stepping
                                 context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
                                 return;
                         }
                 }
 
-                fprintf(stderr, "here: %s\n", ud_insn_asm(&ud_obj));
+                fprintf(stderr, "assembly instruction: %s\n", ud_insn_asm(&ud_obj));
 
                 switch (ud_insn_mnemonic(&ud_obj)) {
                         case UD_Iret:
-                                fprintf(stderr, "found return\n");
+                                fprintf(stderr, "special case: ret\n");
                                 return_reached = true;
                                 break;
 
                         case UD_Icall:
-                                fprintf(stderr, "found call\n");
+                                fprintf(stderr, "special case: call\n");
                                 call_count++;
                                 break;
 
+                        //known safe operations
+                        case UD_Ijmp:
+                                fprintf(stderr, "safe op\n");
+                                break;
+                        
+                        //known potential writes with 1 operand
+                        case UD_Iinc:
+                                fprintf(stderr, "known 1 operand\n");
+                                test_operand(&ud_obj, 0, context);
+                                break;
+                        
+                        //known potential writes with 2 operands
                         case UD_Imov:
-                                fprintf(stderr, "writing to memory\n");
-                                // memory writes
-                                //if not writable call write
-                                if (just_read (&ud_obj, 1, context)) fprintf(stderr, "sucess"); 
-                                break; 
-                        default: break;
+                                fprintf(stderr, "known 2 operands\n");
+                                test_operand(&ud_obj, 1, context);
+                                break;
+
+                        default:
+                                fprintf(stderr, "unknown operation, testing all operands\n");
+                                ud_operand_t* op;
+                                int i = 0;
+                                do {
+                                        if ((op = (ud_operand_t*) ud_insn_opr(&ud_obj, i)) != NULL) {
+                                                fprintf(stderr, "testing operand %d\n", i);
+                                                test_operand(&ud_obj, i, context);
+                                        }
+                                        i++;
+                                } while (i < MAX_OPERANDS && op != NULL);
+                                break;
                 }
 
+                //set TRAP flag to continue single-stepping
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
-                fprintf(stderr, "end if\n");
-                //check it only reads 
         } else {
-                fprintf(stderr, "else\n");
+                fprintf(stderr, "func_start_byte was not 0x55\n");
                 // Put back the original byte (0x55 only)
-                //uint8_t* ip = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP] - 1);
-                //*ip = 0x55;
-                //context->uc_mcontext.gregs[REG_RIP]--;
         }
 }
 
@@ -238,11 +248,11 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
  * @returns bool: true if no writes to memory; false otherwise. 
  */
 bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
-        uint64_t mem_address;
-        const ud_operand_t* instrct = ud_insn_opr(obj, n); 
-        if (instrct->type == UD_OP_MEM) { // 1 is the right side of the instruction (destination)
+        const ud_operand_t* instrct = ud_insn_opr(obj, n);
+        if (instrct->type == UD_OP_MEM) {
+                uint64_t mem_address; //address of the destination
+                int64_t offset; //displacement offset
 
-                int64_t offset; 
                 switch(instrct->offset) {
                 case 8:
                         offset = (int8_t) instrct->lval.sbyte;
@@ -258,15 +268,18 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
                         break;
                 }
 
+                //calculating the memory address based on assembly register information 
                 mem_address = offset +
                               get_register(instrct->base, context) +
                               (get_register(instrct->index, context)*
                                         instrct->scale);
 
-                uint64_t curr_address = context->uc_mcontext.gregs[REG_RIP];
+                //if the instruction tries to access memory outside of the current
+                // +                //stack frame, we know it writes to memory 
+                uint64_t inst_address = context->uc_mcontext.gregs[REG_RIP];
 
                 return ((uintptr_t) stack > mem_address &&
-                        curr_address < mem_address); 
+                                inst_address < mem_address); 
         }
 
         return true;
@@ -315,8 +328,7 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
         case UD_NONE:
                 return 0;
         default:
-                fprintf(stderr, "32, 16 and 8bit registers are not supported yet");
-                //fprintf(stderr, obj); //?
+                fprintf(stderr, "32, 16 and 8bit registers are not supported yet\n");
                 exit(2); 
         }
 }
@@ -340,6 +352,7 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
         nptrs = backtrace(buffer, 200);
 
         backtrace_symbols_fd(buffer, nptrs, STDOUT_FILENO);
+        printf("~~~\n");
 
         void* bt[1];
         bt[0] = (void*) ((ucontext_t*) context)->uc_mcontext.gregs[REG_RIP];
@@ -362,13 +375,11 @@ static int wrapped_main(int argc, char** argv, char** env) {
         sig_action.sa_flags = SA_SIGINFO;
         sigaction(SIGTRAP, &sig_action, 0);
 
-        /*
         memset(&debugger, 0, sizeof(debugger));
         debugger.sa_sigaction = seg_handler;
         sigemptyset(&debugger.sa_mask);
         debugger.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &debugger, 0);
-        */
 
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
