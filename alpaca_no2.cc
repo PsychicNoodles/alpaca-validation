@@ -449,6 +449,16 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 fprintf(stderr, "%d\n", ((int(*)()) func_address)());
                 fprintf(stderr, "return in ret %d\n", (int) ret); 
                 fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
+
+
+                uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
+
+                //making the page writable, readable and executable
+                if (mprotect((void*) page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) == -1) {
+                        fprintf(stderr, "%s\n", strerror(errno));
+                        exit(2); 
+                }
+        
                 new((void*)func_address) X86Jump((void*)disabled_func);
                 fprintf(stderr, "jump inserted\n");
                 file.close();

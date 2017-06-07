@@ -11,7 +11,7 @@ int fake_func() {
 int main () {
         printf("Entered main at address %p with fake_func at %p\n", main, (void*) fake_func);
         test = 10;
-        fake_func();
+        printf("fake_func(): %d\n", fake_func());
         return 0; 
 }
 
