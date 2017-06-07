@@ -20,6 +20,7 @@
 #include <link.h>
 #include <new>
 
+#include <queue>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,7 +41,7 @@ uint64_t func_address; //the address of the target function
 uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
-uint64_t ret; //return value for the function
+std::queue<uint64_t> rets; //return values for the disabler function
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
@@ -407,7 +408,9 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 }
 
 uint64_t disabled_func() {
-        return ret; 
+        uint64_t val = rets.front();
+        rets.pop();
+        return val;
 }
 
 /**
@@ -449,16 +452,19 @@ static int wrapped_main(int argc, char** argv, char** env) {
         } else {
                 string line; 
                 file.open("read-logger", std::fstream::in | std::fstream::binary);
-                uint32_t buffer[2] = {0};
-                file.read((char*)buffer, sizeof(buffer));
-                fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
 
-                ret = (uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]);
+                while(!file.eof()) {
+                        uint32_t buffer[2] = {0};
+                        file.read((char*)buffer, sizeof(buffer));
+                        fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
+
+                        rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
+
+                        fprintf(stderr, "return in ret %d\n", (int) rets.front()); 
+
+                }
 
                 fprintf(stderr, "%d\n", ((int(*)()) func_address)());
-                fprintf(stderr, "return in ret %d\n", (int) ret); 
-                fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
-
 
                 uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
@@ -467,7 +473,8 @@ static int wrapped_main(int argc, char** argv, char** env) {
                         fprintf(stderr, "%s\n", strerror(errno));
                         exit(2); 
                 }
-        
+                
+                fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
                 new((void*)func_address) X86Jump((void*)disabled_func);
                 fprintf(stderr, "jump inserted\n");
         }
