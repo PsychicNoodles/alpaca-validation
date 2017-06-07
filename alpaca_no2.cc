@@ -24,21 +24,26 @@
 #include <udis86.h>
 
 #define PAGE_SIZE 4096
-int log_fd;
-std::uint64_t offset;
-std::uint64_t address; 
-uint8_t remembered_byte;
-bool return_reached; 
-int call_count;
-uint64_t* stack;
 
+using std::string;
+
+int log_fd; //for logging later
+uint64_t offset; //offset of the main exectuable
+uint8_t remembered_byte; //the byte overwrtitten with 0xCC for single-stepping
+uint64_t* stack; //a pointer to the beginning of the stack
+
+//function declarations
+static int callback(struct dl_phdr_info *info, size_t size, void *data);
+uint64_t find_address(const char* file_path, string func_name);
+uint64_t get_register(ud_type_t obj, ucontext_t* context);
+void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context);
 void shut_down();
-uint64_t get_register(ud_type_t obj, ucontext_t* context);
+void trap_handler(int signal, siginfo_t* info, void* cont);
 
-std::uint64_t find_address(const char* file_path, std::string func_name) {
+uint64_t find_address(const char* file_path, string func_name) {
 
-        std::uint64_t addr;
+        uint64_t addr;
 
         int read_fd = open(file_path, O_RDONLY);
         if (read_fd < 0) {
@@ -73,9 +78,9 @@ std::uint64_t find_address(const char* file_path, std::string func_name) {
         return addr; 
 }
 
-void single_step(std::uint64_t func_address) {
+void single_step(uint64_t func_address) {
 
-        std::uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
+        uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
         //making the page writable, readable and executable
         if (-1 == mprotect((void*) page_start, PAGE_SIZE, PROT_READ| PROT_WRITE| PROT_EXEC)) {
@@ -111,6 +116,8 @@ void handler(int signal, siginfo_t* info, void* cont) {
         //fprintf(stderr, "caught SIGTRAP\n");
 
         static int run = 0;
+        static bool return_reached = false;
+        static int call_count = 0;
 
         // process assembly instruction info w m_context
         ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
@@ -304,8 +311,6 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
 
-        call_count = 0;
-
         //set up for the signal handler
         struct sigaction sig_action, debugger;
         memset(&sig_action, 0, sizeof(sig_action));
@@ -321,14 +326,14 @@ static int wrapped_main(int argc, char** argv, char** env) {
         sigaction(SIGSEGV, &debugger, 0);
 
         //storing the func_name searched for as the last argument
-        std::string func_name = argv[argc-1];  
+        string func_name = argv[argc-1];  
         argv[argc-1] = NULL;
 
         //getting the address of the main executable for the offset 
         dl_iterate_phdr(callback, NULL);
 
         fprintf(stderr, "finding address\n");
-        address = find_address("/proc/self/exe", func_name);
+        uint64_t address = find_address("/proc/self/exe", func_name);
 
         fprintf(stderr, "single stepping\n");
         single_step(address);
