@@ -54,25 +54,9 @@ void find_address(const char* file_path, string func_name) {
         for (auto &sec : f.sections()) {
                 if (sec.get_hdr().type != elf::sht::symtab) continue;
 
-                /*
-                fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
-                fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
-                                "Address", "Size", "Binding", "Index", "Name", "Type");
-                */
-
                 for (auto sym : sec.as_symtab()) {
                         auto &d = sym.get_data();
                         if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
-
-                        /*
-                        //probably will end up writing to log_fd
-                        fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
-                                        offset + d.value, d.size,
-                                        to_string(d.binding()).c_str(),
-                                        to_string(d.shnxd).c_str(),
-                                        sym.get_name().c_str(),
-                                        to_string(d.type()).c_str());
-                        */
 
                         addr = offset + d.value; 
                 }
@@ -138,24 +122,17 @@ static int wrapped_main(int argc, char** argv, char** env) {
                         uint32_t buffer[4];
                         for(int i = 0; i < 4; i++) {
                                 file.read((char*) &buffer[i], sizeof(uint32_t));
-                                std::cerr << buffer[i] << "\n";
                         }
 
                         fprets.push(*((double*)buffer));
-                        std::cerr << fprets.front() << "\n";
                 } else {
                         uint32_t buffer[2] = {0};
                         file.read((char*)buffer, sizeof(buffer));
-                        //fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
 
                         rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
-
-                        //                        fprintf(stderr, "return in ret %d\n", (int) rets.front()); 
                 }
 
         }
-
-//                fprintf(stderr, "%d\n", ((int(*)()) func_address)());
 
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
@@ -165,15 +142,23 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 exit(2); 
         }
                 
-        //              fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
         if(fpmode) new((void*)func_address) X86Jump((void*)double_disabled_func);
         else new((void*)func_address) X86Jump((void*)int_disabled_func);
-        //fprintf(stderr, "jump inserted\n");
 
-//        fprintf(stderr, "starting main\n");
+        //energy measurements and running the input program 
+        std::ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", std::ios_base::in);
+        unsigned long long energy_before, energy_after; 
+        energy_file >> energy_before;
+
         og_main(argc, argv, env);
-        file.close();
+
+        energy_file.seekg(0); 
+        energy_file >> energy_after;
+        fprintf(stderr, "Energy with disabled function: %llu\n", (energy_after-energy_before));
         
+        energy_file.close();
+        file.close();
+    
         return 0; 
 }
 

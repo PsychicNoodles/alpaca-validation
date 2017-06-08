@@ -303,7 +303,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 //set TRAP flag to continue single-stepping
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
         } else {
-                fprintf(stderr, "func_start_byte was not 0x55, is %p\n", (void*)func_start_byte);
+                fprintf(stderr, "func_start_byte was not 0x55, is %hhu\n",func_start_byte);
                 // Put back the original byte (0x55 only)
         }
 }
@@ -468,8 +468,17 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
                 
- 
+        std::ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", std::ios_base::in);
+        unsigned long long energy_before, energy_after;
+        energy_file >> energy_before;
+        
         og_main(argc, argv, env);
+
+        energy_file.seekg(0);
+        energy_file >> energy_after;
+
+        fprintf(stderr, "Original energy consumption: %llu\n", (energy_after-energy_before));
+        energy_file.close();
         file.close();
         
         return 0; 
