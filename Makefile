@@ -4,4 +4,4 @@ all: alpaca_no2.cc
 	clang -g prime-test.c -o prime-test
 
 disabler: alpaca_fn_disabler.cc
-	clang++ -g --std=c++11 -rdynamic -shared -fPIC -o alpaca_fn_disabler alpaca_fn_disabler.cc
+	clang++ -g --std=c++11 -rdynamic -shared -fPIC -o alpaca_fn_disabler.so alpaca_fn_disabler.cc -ldl

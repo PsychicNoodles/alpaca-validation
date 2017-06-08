@@ -1,17 +1,13 @@
 #include <stdio.h>
 
-int test;
-
-int fake_func() {
+double fake_func() {
         printf("fake\n");
-        test = 22;
-        return test; 
+        return 2.2468/2.0;
 }
 
 int main () {
         printf("Entered main at address %p with fake_func at %p\n", main, (void*) fake_func);
-        test = 10;
-        printf("fake_func(): %d\n", fake_func());
+        printf("fake_func(): %f\n", fake_func());
         return 0; 
 }
 

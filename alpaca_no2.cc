@@ -38,6 +38,7 @@ using std::string;
 
 std::fstream file; //for logging later
 uint64_t func_address; //the address of the target function
+bool fpmode;
 uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
@@ -195,25 +196,47 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 if (return_reached) {
                         call_count--;
                         return_reached = false;
-                        uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
-                        fprintf(stderr, "rax value: %lu\n", rax);
-                        //each call may have its own return, so final return will give a negative count
-                        if(call_count < 0) {
-                                fprintf(stderr, "returned from target function\n");
-                                //logging 
-                                uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
-                                uint32_t lval = htonl(rax & 0xFFFFFFFF);
-                                file.write((char*) &hval, sizeof(hval));
-                                file.write((char*) &lval, sizeof(lval));
-
-                                //stops single-stepping
-                                context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+                        if(fpmode) {
+                                uint32_t* xmm = context->uc_mcontext.fpregs->_xmm[0].element;
+                                fprintf(stderr, "xmm0 value: %d, %d, %d, %d\n", xmm[0], xmm[1], xmm[2], xmm[3]);
                                 
-                                single_step();
+                                if(call_count < 0) {
+                                        fprintf(stderr, "returned from target function\n");
 
-                                run = 0;
-                                call_count = 0;
-                                return;
+                                        for(int i = 0; i < 4; i++) {
+                                                file.write((char*) &xmm[i], sizeof(uint32_t));
+                                        }
+                                        
+                                        //stops single-stepping
+                                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+
+                                        single_step();
+
+                                        run = 0;
+                                        call_count = 0;
+                                        return;
+                                }
+                        } else {
+                                uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
+                                fprintf(stderr, "rax value: %lu\n", rax);
+                                //each call may have its own return, so final return will give a negative count
+                                if(call_count < 0) {
+                                        fprintf(stderr, "returned from target function\n");
+                                        //logging 
+                                        uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
+                                        uint32_t lval = htonl(rax & 0xFFFFFFFF);
+                                        file.write((char*) &hval, sizeof(hval));
+                                        file.write((char*) &lval, sizeof(lval));
+
+                                        //stops single-stepping
+                                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+
+                                        single_step();
+
+                                        run = 0;
+                                        call_count = 0;
+                                        return;
+                                }
                         }
                 }
 
@@ -414,10 +437,13 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
         
+        fpmode = string(argv[argc-2]).compare("fp") == 0;
+
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
         argv[argc-1] = NULL;
-        argc--;
+
+        argc -= 2;
 
         dl_iterate_phdr(callback, NULL);
         find_address("/proc/self/exe", func_name);

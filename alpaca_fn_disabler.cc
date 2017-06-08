@@ -12,16 +12,22 @@
 
 #include <fstream>
 #include <string>
+#include <iostream>
 #include <queue>
+#include <array>
 
 #define PAGE_SIZE 4096
 
 using std::string;
+using std::queue;
+using std::array;
 
 std::fstream file; //for logging later
 uint64_t func_address; //the address of the target function
+bool fpmode;
 uint64_t offset; //offset of the main exectuable
-std::queue<uint64_t> rets; //return values for the disabler function
+queue<uint64_t> rets; //return values for the disabler function
+queue<double> fprets;
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
@@ -94,9 +100,15 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
         return 0; 
 }
 
-uint64_t disabled_func() {
+uint64_t int_disabled_func() {
         uint64_t val = rets.front();
         rets.pop();
+        return val;
+}
+
+double double_disabled_func() {
+        double val = fprets.front();
+        fprets.pop();
         return val;
 }
 
@@ -106,6 +118,8 @@ uint64_t disabled_func() {
  */
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
+
+        fpmode = string(argv[argc-2]).compare("fp") == 0;
         
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
@@ -120,13 +134,24 @@ static int wrapped_main(int argc, char** argv, char** env) {
         file.open("read-logger", std::fstream::in | std::fstream::binary);
 
         while(!file.eof()) {
-                uint32_t buffer[2] = {0};
-                file.read((char*)buffer, sizeof(buffer));
-                //fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
+                if(fpmode) {
+                        uint32_t buffer[4];
+                        for(int i = 0; i < 4; i++) {
+                                file.read((char*) &buffer[i], sizeof(uint32_t));
+                                std::cerr << buffer[i] << "\n";
+                        }
 
-                rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
+                        fprets.push(*((double*)buffer));
+                        std::cerr << fprets.front() << "\n";
+                } else {
+                        uint32_t buffer[2] = {0};
+                        file.read((char*)buffer, sizeof(buffer));
+                        //fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
 
-//                        fprintf(stderr, "return in ret %d\n", (int) rets.front()); 
+                        rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
+
+                        //                        fprintf(stderr, "return in ret %d\n", (int) rets.front()); 
+                }
 
         }
 
@@ -141,7 +166,8 @@ static int wrapped_main(int argc, char** argv, char** env) {
         }
                 
         //              fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
-        new((void*)func_address) X86Jump((void*)disabled_func);
+        if(fpmode) new((void*)func_address) X86Jump((void*)double_disabled_func);
+        else new((void*)func_address) X86Jump((void*)int_disabled_func);
         //fprintf(stderr, "jump inserted\n");
 
 //        fprintf(stderr, "starting main\n");
