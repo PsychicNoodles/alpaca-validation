@@ -407,12 +407,6 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
         backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
 }
 
-uint64_t disabled_func() {
-        uint64_t val = rets.front();
-        rets.pop();
-        return val;
-}
-
 /**
  * Fake main that intercepts the main of a program running the analyzer tool
  * takes in the arguments passed on running 
@@ -420,66 +414,35 @@ uint64_t disabled_func() {
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
         
-        int mode = atoi(argv[argc-1]);
         //storing the func_name searched for as the last argument
-        string func_name = argv[argc-2];  
-        argv[argc-2] = NULL;
+        string func_name = argv[argc-1];  
+        argv[argc-1] = NULL;
+        argc--;
 
         dl_iterate_phdr(callback, NULL);
         find_address("/proc/self/exe", func_name);
         
-        if (mode == 0) {
-                //set up for the SIGTRAP signal handler
-                struct sigaction sig_action, debugger;
-                memset(&sig_action, 0, sizeof(sig_action));
-                sig_action.sa_sigaction = trap_handler;
-                sigemptyset(&sig_action.sa_mask);
-                sig_action.sa_flags = SA_SIGINFO;
-                sigaction(SIGTRAP, &sig_action, 0);
+        //set up for the SIGTRAP signal handler
+        struct sigaction sig_action, debugger;
+        memset(&sig_action, 0, sizeof(sig_action));
+        sig_action.sa_sigaction = trap_handler;
+        sigemptyset(&sig_action.sa_mask);
+        sig_action.sa_flags = SA_SIGINFO;
+        sigaction(SIGTRAP, &sig_action, 0);
 
                 
-                //for the debugger
-                memset(&debugger, 0, sizeof(debugger));
-                debugger.sa_sigaction = seg_handler;
-                sigemptyset(&debugger.sa_mask);
-                debugger.sa_flags = SA_SIGINFO;
-                sigaction(SIGSEGV, &debugger, 0);
+        //for the debugger
+        memset(&debugger, 0, sizeof(debugger));
+        debugger.sa_sigaction = seg_handler;
+        sigemptyset(&debugger.sa_mask);
+        debugger.sa_flags = SA_SIGINFO;
+        sigaction(SIGSEGV, &debugger, 0);
                 
-                single_step();
+        single_step();
 
-                file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
+        file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
                 
-        } else {
-                string line; 
-                file.open("read-logger", std::fstream::in | std::fstream::binary);
-
-                while(!file.eof()) {
-                        uint32_t buffer[2] = {0};
-                        file.read((char*)buffer, sizeof(buffer));
-                        fprintf(stderr, "read from file: %d %d\n", buffer[0], buffer[1]);
-
-                        rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
-
-                        fprintf(stderr, "return in ret %d\n", (int) rets.front()); 
-
-                }
-
-                fprintf(stderr, "%d\n", ((int(*)()) func_address)());
-
-                uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
-
-                //making the page writable, readable and executable
-                if (mprotect((void*) page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) == -1) {
-                        fprintf(stderr, "%s\n", strerror(errno));
-                        exit(2); 
-                }
-                
-                fprintf(stderr, "inserting jump from %p to %p\n", (void*) func_address, (void*) disabled_func);
-                new((void*)func_address) X86Jump((void*)disabled_func);
-                fprintf(stderr, "jump inserted\n");
-        }
-
-        fprintf(stderr, "starting main\n");
+ 
         og_main(argc, argv, env);
         file.close();
         
