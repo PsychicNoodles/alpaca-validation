@@ -107,7 +107,7 @@ void find_address(const char* file_path, string func_name) {
  * Enables single-stepping (instruction by instruction) through the function
  * func_address: (virtual) address of the function in memory
  */
-void single_step() {
+void single_step(uint64_t func_address) {
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
         //making the page writable, readable and executable
@@ -144,6 +144,12 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
         else fprintf(stderr, "write in operand %d -- not supported yet\n", n);
 }
 
+void initialize_ud(ud_t* ud_obj) {
+        ud_init(ud_obj);
+        ud_set_mode(ud_obj, 64);
+        ud_set_syntax(ud_obj, UD_SYN_ATT);
+        ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
+}
 /**
  * Initially catches the SIGTRAP signal cause by INT3(0xCC) followed by catching a TRAP FLAG
  * Analyzes next instruction's effects by parsing assembly information 
@@ -164,6 +170,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         static bool return_reached = false;
         static int call_count = 0;
         static ud_t ud_obj;
+        static bool non_regular_start = false; 
 
         ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
@@ -179,133 +186,149 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         *stack = frame;
                         context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack;
 
-                        ud_init(&ud_obj);
-                        ud_set_mode(&ud_obj, 64);
-                        ud_set_syntax(&ud_obj, UD_SYN_ATT);
-                        ud_set_vendor(&ud_obj, UD_VENDOR_INTEL);
+                        initialize_ud(&ud_obj);
 
                         run = 1;
                         ((uint8_t*)func_address)[0] = func_start_byte;
                 }
+                
+        }  else {
 
-                //grabs next instruction to disassemble 
-                ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
-                ud_disassemble(&ud_obj);
+                non_regular_start = true;
+                run = 1; 
+                fprintf(stderr, "func_start_byte was not 0x55, is %hhu\n",func_start_byte);
+                ((uint8_t*)func_address)[0] = func_start_byte; //putting the original byte back
+                    
+                initialize_ud(&ud_obj);
+        }
 
-                //if end of a function is reached in the next step  
-                if (return_reached) {
-                        call_count--;
-                        return_reached = false;
-                        if(fpmode) {
-                                uint32_t* xmm = context->uc_mcontext.fpregs->_xmm[0].element;
-                                fprintf(stderr, "xmm0 value: %d, %d, %d, %d\n", xmm[0], xmm[1], xmm[2], xmm[3]);
+        //grabs next instruction to disassemble 
+        ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
+        ud_disassemble(&ud_obj);
+
+        //if end of a function is reached in the next step  
+        if (return_reached) {
+                call_count--;
+                return_reached = false;
+                if(fpmode) {
+                        uint32_t* xmm = context->uc_mcontext.fpregs->_xmm[0].element;
+                        fprintf(stderr, "xmm0 value: %d, %d, %d, %d\n", xmm[0], xmm[1], xmm[2], xmm[3]);
                                 
-                                if(call_count < 0) {
-                                        fprintf(stderr, "returned from target function\n");
+                        if(call_count < 0) {
+                                fprintf(stderr, "returned from target function\n");
 
-                                        for(int i = 0; i < 4; i++) {
-                                                file.write((char*) &xmm[i], sizeof(uint32_t));
-                                        }
-                                        
+                                for(int i = 0; i < 4; i++) {
+                                        file.write((char*) &xmm[i], sizeof(uint32_t));
+                                }
+
+                                if (!non_regular_start) {
                                         //stops single-stepping
                                         context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-
-                                        single_step();
-
-                                        run = 0;
-                                        call_count = 0;
-                                        return;
                                 }
-                        } else {
-                                uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
-                                fprintf(stderr, "rax value: %lu\n", rax);
-                                //each call may have its own return, so final return will give a negative count
-                                if(call_count < 0) {
-                                        fprintf(stderr, "returned from target function\n");
-                                        //logging 
-                                        uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
-                                        uint32_t lval = htonl(rax & 0xFFFFFFFF);
-                                        file.write((char*) &hval, sizeof(hval));
-                                        file.write((char*) &lval, sizeof(lval));
 
+                                single_step(func_address); 
+
+                                non_regular_start = false; 
+                                run = 0;
+                                call_count = 0;
+
+                                return;
+                        }
+                } else {
+                        uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
+                        fprintf(stderr, "rax value: %lu\n", rax);
+                        //each call may have its own return, so final return will give a negative count
+                        if(call_count < 0) {
+                                fprintf(stderr, "returned from target function\n");
+                                //logging 
+                                uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
+                                uint32_t lval = htonl(rax & 0xFFFFFFFF);
+                                file.write((char*) &hval, sizeof(hval));
+                                file.write((char*) &lval, sizeof(lval));
+
+                                if (!non_regular_start) {
                                         //stops single-stepping
                                         context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-
-                                        single_step();
-
-                                        run = 0;
-                                        call_count = 0;
-                                        return;
                                 }
+
+                                single_step(func_address);
+
+                                non_regular_start = false; 
+                                run = 0;
+                                call_count = 0;
+                                return;
                         }
                 }
+        }
 
-                fprintf(stderr, "assembly instruction: %s\n", ud_insn_asm(&ud_obj));
+        fprintf(stderr, "assembly instruction: %s\n", ud_insn_asm(&ud_obj));
 
-                switch (ud_insn_mnemonic(&ud_obj)) {
-                        case UD_Iret: case UD_Iretf:
-                                fprintf(stderr, "special case: ret (call_count: %d)\n", call_count);
-                                return_reached = true;
-                                break;
+        switch (ud_insn_mnemonic(&ud_obj)) {
+        case UD_Iret: case UD_Iretf:
+                fprintf(stderr, "special case: ret (call_count: %d)\n", call_count);
+                return_reached = true;
+                break;
 
-                        case UD_Icall:
-                                fprintf(stderr, "special case: call\n");
-                                call_count++;
-                                break;
+        case UD_Icall:
+                fprintf(stderr, "special case: call\n");
+                call_count++;
+                break;
 
-                        //readonly 1 operand instructions
-                        case UD_Iclflush: case UD_Iclts: case UD_Iffree: case UD_Iffreep:
-                        case UD_Ifld1: case UD_Ifldcw: case UD_Ifldenv: case UD_Ifldl2e:
-                        case UD_Ifldl2t: case UD_Ifldlg2: case UD_Ifldln2: case UD_Ifldz:
-                        case UD_Iftst: case UD_Ifxam: case UD_Ifxtract: case UD_Igetsec:
-                        case UD_Iint1: case UD_Iinto: case UD_Ijb: case UD_Ijbe: case UD_Ijecxz:
-                        case UD_Ijl: case UD_Ijmp: case UD_Ijae: case UD_Ija: case UD_Ijge:
-                        case UD_Ijno: case UD_Ijnp: case UD_Ijns: case UD_Ijnz: case UD_Ijo:
-                        case UD_Ijp: case UD_Ijs: case UD_Ijz: case UD_Ilahf: case UD_Ildmxcsr:
-                        case UD_Ileave: case UD_Inop: case UD_Ipop: case UD_Ipopfq:
-                        case UD_Iprefetchnta: case UD_Iprefetcht0: case UD_Iprefetcht1:
-                        case UD_Iprefetcht2: case UD_Ipush: case UD_Ipushfq: case UD_Irep:
-                        case UD_Irepne: case UD_Irsm: case UD_Isahf: case UD_Isetb: case UD_Isetbe:
-                        case UD_Isetl: case UD_Isetle: case UD_Iseto: case UD_Isetp: case UD_Isets:
-                        case UD_Isetz: case UD_Istmxcsr: case UD_Iverr: case UD_Iverw:
-                        case UD_Ivmclear: case UD_Ivmptrld: case UD_Ivmptrst: case UD_Ivmxon:
-                              fprintf(stderr, "known readonly 1 op instruction\n");
-                              break;
-                        //potential write 1 operand instructions
-                        case UD_Idec: case UD_If2xm1: case UD_Ifabs: case UD_Ifchs: case UD_Ifcos:
-                        case UD_Ifnstcw: case UD_Ifnstenv: case UD_Ifnstsw: case UD_Ifptan:
-                        case UD_Ifrndint: case UD_Ifsin: case UD_Ifsincos: case UD_Ifsqrt:
-                        case UD_Iinc: case UD_Iinvlpg: case UD_Ineg: case UD_Inot:
-                              fprintf(stderr, "known potential write 1 op instruction\n");
-                              test_operand(&ud_obj, 0, context);
-                              break;
+                //readonly 1 operand instructions
+        case UD_Iclflush: case UD_Iclts: case UD_Iffree: case UD_Iffreep:
+        case UD_Ifld1: case UD_Ifldcw: case UD_Ifldenv: case UD_Ifldl2e:
+        case UD_Ifldl2t: case UD_Ifldlg2: case UD_Ifldln2: case UD_Ifldz:
+        case UD_Iftst: case UD_Ifxam: case UD_Ifxtract: case UD_Igetsec:
+        case UD_Iint1: case UD_Iinto: case UD_Ijb: case UD_Ijbe: case UD_Ijecxz:
+        case UD_Ijl: case UD_Ijmp: case UD_Ijae: case UD_Ija: case UD_Ijge:
+        case UD_Ijno: case UD_Ijnp: case UD_Ijns: case UD_Ijnz: case UD_Ijo:
+        case UD_Ijp: case UD_Ijs: case UD_Ijz: case UD_Ilahf: case UD_Ildmxcsr:
+        case UD_Ileave: case UD_Inop: case UD_Ipop: case UD_Ipopfq:
+        case UD_Iprefetchnta: case UD_Iprefetcht0: case UD_Iprefetcht1:
+        case UD_Iprefetcht2: case UD_Ipush: case UD_Ipushfq: case UD_Irep:
+        case UD_Irepne: case UD_Irsm: case UD_Isahf: case UD_Isetb: case UD_Isetbe:
+        case UD_Isetl: case UD_Isetle: case UD_Iseto: case UD_Isetp: case UD_Isets:
+        case UD_Isetz: case UD_Istmxcsr: case UD_Iverr: case UD_Iverw:
+        case UD_Ivmclear: case UD_Ivmptrld: case UD_Ivmptrst: case UD_Ivmxon:
+                fprintf(stderr, "known readonly 1 op instruction\n");
+                break;
+                //potential write 1 operand instructions
+        case UD_Idec: case UD_If2xm1: case UD_Ifabs: case UD_Ifchs: case UD_Ifcos:
+        case UD_Ifnstcw: case UD_Ifnstenv: case UD_Ifnstsw: case UD_Ifptan:
+        case UD_Ifrndint: case UD_Ifsin: case UD_Ifsincos: case UD_Ifsqrt:
+        case UD_Iinc: case UD_Iinvlpg: case UD_Ineg: case UD_Inot:
+                fprintf(stderr, "known potential write 1 op instruction\n");
+                test_operand(&ud_obj, 0, context);
+                break;
                         
-                        //known potential writes with 2 operands
-                        case UD_Imov:
-                                fprintf(stderr, "known potential write 2 op instruction\n");
-                                test_operand(&ud_obj, 1, context);
-                                break;
+                //known potential writes with 2 operands
+        case UD_Imov:
+                fprintf(stderr, "known potential write 2 op instruction\n");
+                test_operand(&ud_obj, 1, context);
+                break;
 
-                        default:
-                                fprintf(stderr, "unknown operation, testing all operands\n");
-                                ud_operand_t* op;
-                                int i = 0;
-                                do {
-                                        if ((op = (ud_operand_t*) ud_insn_opr(&ud_obj, i)) != NULL) {
-                                                fprintf(stderr, "testing operand %d\n", i);
-                                                test_operand(&ud_obj, i, context);
-                                        }
-                                        i++;
-                                } while (i < MAX_OPERANDS && op != NULL);
-                                break;
-                }
+        default:
+                fprintf(stderr, "unknown operation, testing all operands\n");
+                ud_operand_t* op;
+                int i = 0;
+                do {
+                        if ((op = (ud_operand_t*) ud_insn_opr(&ud_obj, i)) != NULL) {
+                                fprintf(stderr, "testing operand %d\n", i);
+                                test_operand(&ud_obj, i, context);
+                        }
+                        i++;
+                } while (i < MAX_OPERANDS && op != NULL);
+                break;
+        }
 
+        if (non_regular_start) {
+                non_regular_start = false; 
+                single_step(context->uc_mcontext.gregs[REG_RIP]); 
+        } else {
                 //set TRAP flag to continue single-stepping
                 context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
-        } else {
-                fprintf(stderr, "func_start_byte was not 0x55, is %hhu\n",func_start_byte);
-                // Put back the original byte (0x55 only)
         }
+   
 }
 
 /**
@@ -464,7 +487,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         debugger.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &debugger, 0);
                 
-        single_step();
+        single_step(func_address);
 
         file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
                 
