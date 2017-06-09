@@ -34,15 +34,15 @@
 #define PAGE_SIZE 4096
 #define MAX_OPERANDS 126
 
-using std::string;
+using namespace std;
 
-std::fstream file; //for logging later
+fstream file; //for logging later
 uint64_t func_address; //the address of the target function
 bool fpmode;
 uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
-std::queue<uint64_t> rets; //return values for the disabler function
+queue<uint64_t> rets; //return values for the disabler function
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
@@ -489,9 +489,9 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 
         single_step(func_address);
 
-        file.open("read-logger", std::fstream::out | std::fstream::trunc | std::fstream::binary);
+        file.open("read-logger", fstream::out | fstream::trunc | fstream::binary);
                 
-        std::ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", std::ios_base::in);
+        ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", fstream::in);
         unsigned long long energy_before, energy_after;
         energy_file >> energy_before;
         
