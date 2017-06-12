@@ -2,6 +2,7 @@ example
 prime-test
 alpaca_no2.so
 alpaca_fn_disabler.so
+read-logger
 [._]*.s[a-v][a-z]
 [._]*.sw[a-p]
 [._]s[a-v][a-z]
