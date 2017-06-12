@@ -52,7 +52,7 @@ void find_address(const char* file_path, string func_name) {
 
         elf::elf f(elf::create_mmap_loader(read_fd));
         for (auto &sec : f.sections()) {
-                if (sec.get_hdr().type != elf::sht::symtab) continue;
+                if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
 
                 for (auto sym : sec.as_symtab()) {
                         auto &d = sym.get_data();
@@ -108,7 +108,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
         argv[argc-1] = NULL;
-        argc--;
+        argc -= 2;
 
         dl_iterate_phdr(callback, NULL);
         find_address("/proc/self/exe", func_name);
