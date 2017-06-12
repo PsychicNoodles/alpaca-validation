@@ -104,6 +104,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
 
         fpmode = string(argv[argc-2]).compare("fp") == 0;
+        argv[argc-2] = NULL;
         
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
@@ -154,7 +155,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         energy_file.seekg(0); 
         energy_file >> energy_after;
-        fprintf(stderr, "Energy with disabled function: %llu\n", (energy_after-energy_before));
+        printf("Energy with disabled function: %llu\n", (energy_after-energy_before));
         
         energy_file.close();
         file.close();
