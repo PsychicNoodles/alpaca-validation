@@ -22,12 +22,19 @@ using std::string;
 using std::queue;
 using std::array;
 
+enum ReturnMode{
+        INT,
+        FLOAT,
+        LARGE
+};
+
 std::fstream file; //for logging later
 uint64_t func_address; //the address of the target function
-bool fpmode;
+ReturnMode return_mode;
 uint64_t offset; //offset of the main exectuable
 queue<uint64_t> rets; //return values for the disabler function
 queue<double> fprets;
+queue<void*> ptrrets;
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
@@ -96,6 +103,12 @@ double double_disabled_func() {
         return val;
 }
 
+void* large_disabled_func() {
+        void* ptr = ptrrets.front();
+        ptrrets.pop();
+        return ptr;
+}
+
 /**
  * Fake main that intercepts the main of a program running the analyzer tool
  * takes in the arguments passed on running 
@@ -103,7 +116,14 @@ double double_disabled_func() {
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
 
-        fpmode = string(argv[argc-2]).compare("fp") == 0;
+        string mode = string(argv[argc-2]);
+        if(mode == "float") return_mode = FLOAT;
+        else if(mode == "struct") return_mode = LARGE;
+        else if(mode == "int") return_mode = INT;
+        else {
+                fprintf(stderr, "Invalid return type mode %s\n", mode.c_str());
+                exit(3);
+        }
         
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
@@ -118,18 +138,27 @@ static int wrapped_main(int argc, char** argv, char** env) {
         file.open("read-logger", std::fstream::in | std::fstream::binary);
 
         while(!file.eof()) {
-                if(fpmode) {
+                if(return_mode == FLOAT) {
                         uint32_t buffer[4];
                         for(int i = 0; i < 4; i++) {
                                 file.read((char*) &buffer[i], sizeof(uint32_t));
                         }
 
                         fprets.push(*((double*)buffer));
-                } else {
+                } else if(return_mode == LARGE) {
+                        uint32_t buffer[2] = {0};
+                        file.read((char*)buffer, sizeof(buffer));
+
+                        uint64_t p = ((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
+                        ptrrets.push((void*)p);
+                } else if(return_mode == INT) {
                         uint32_t buffer[2] = {0};
                         file.read((char*)buffer, sizeof(buffer));
 
                         rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
+                } else {
+                        fprintf(stderr, "Invalid return type mode\n");
+                        exit(3);
                 }
 
         }
@@ -142,8 +171,9 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 exit(2); 
         }
                 
-        if(fpmode) new((void*)func_address) X86Jump((void*)double_disabled_func);
-        else new((void*)func_address) X86Jump((void*)int_disabled_func);
+        if(return_mode == FLOAT) new((void*)func_address) X86Jump((void*)double_disabled_func);
+        else if(return_mode == LARGE) new((void*)func_address) X86Jump((void*) large_disabled_func);
+        else if(return_mode == INT) new((void*)func_address) X86Jump((void*)int_disabled_func);
 
         //energy measurements and running the input program 
         std::ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", std::ios_base::in);

@@ -36,9 +36,15 @@
 
 using namespace std;
 
+enum ReturnMode{
+        INT,
+        FLOAT,
+        LARGE
+};
+
 fstream file; //for logging later
 uint64_t func_address; //the address of the target function
-bool fpmode;
+ReturnMode return_mode;
 uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 uint64_t* stack; //a pointer to the beginning of the stack
@@ -210,7 +216,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         if (return_reached) {
                 call_count--;
                 return_reached = false;
-                if(fpmode) {
+                if(return_mode == FLOAT) {
                         uint32_t* xmm = context->uc_mcontext.fpregs->_xmm[0].element;
                         fprintf(stderr, "xmm0 value: %d, %d, %d, %d\n", xmm[0], xmm[1], xmm[2], xmm[3]);
                                 
@@ -234,6 +240,32 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
                                 return;
                         }
+                } else if(return_mode == LARGE) {{
+                        uint64_t rax = context->uc_mcontext.gregs[REG_RAX]; 
+                        fprintf(stderr, "rdx value: %p\n", (void*)(context->uc_mcontext.gregs[REG_RDX]));
+                        fprintf(stderr, "also rax value: %p\n", (void*) context->uc_mcontext.gregs[REG_RAX]);
+                        //each call may have its own return, so final return will give a negative count
+                        if(call_count < 0) {
+                                fprintf(stderr, "returned from target function\n");
+                                //logging 
+                                uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
+                                uint32_t lval = htonl(rax & 0xFFFFFFFF);
+                                file.write((char*) &hval, sizeof(hval));
+                                file.write((char*) &lval, sizeof(lval));
+
+                                if (!non_regular_start) {
+                                        //stops single-stepping
+                                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+                                }
+
+                                single_step(func_address);
+
+                                non_regular_start = false; 
+                                run = 0;
+                                call_count = 0;
+                                return;
+                        }
+                }
                 } else {
                         uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
                         fprintf(stderr, "rax value: %lu\n", rax);
@@ -460,7 +492,14 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
         
-        fpmode = string(argv[argc-2]).compare("fp") == 0;
+        string mode = string(argv[argc-2]);
+        if(mode == "float") return_mode = FLOAT;
+        else if(mode == "struct") return_mode = LARGE;
+        else if(mode == "int") return_mode = INT;
+        else {
+                fprintf(stderr, "Invalid return type mode %s\n", mode.c_str());
+                exit(3);
+        }
 
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
