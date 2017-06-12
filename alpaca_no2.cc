@@ -63,7 +63,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont);
  * func_name: the name of the target function
  */
 void find_address(const char* file_path, string func_name) {
-        uint64_t addr;
+        uint64_t addr = 0;
 
         int read_fd = open(file_path, O_RDONLY);
         if (read_fd < 0) {
@@ -73,19 +73,19 @@ void find_address(const char* file_path, string func_name) {
 
         elf::elf f(elf::create_mmap_loader(read_fd));
         for (auto &sec : f.sections()) {
-                if (sec.get_hdr().type != elf::sht::symtab) continue;
+                if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
 
-                /*
+              
                 fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
                 fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
                                 "Address", "Size", "Binding", "Index", "Name", "Type");
-                */
+                
 
                 for (auto sym : sec.as_symtab()) {
                         auto &d = sym.get_data();
                         if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
 
-                        /*
+                        
                         //probably will end up writing to log_fd
                         fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
                                         offset + d.value, d.size,
@@ -93,12 +93,12 @@ void find_address(const char* file_path, string func_name) {
                                         to_string(d.shnxd).c_str(),
                                         sym.get_name().c_str(),
                                         to_string(d.type()).c_str());
-                        */
+                        
 
                         addr = offset + d.value; 
                 }
         }
-
+       
         func_address = addr;
         //potential problem with multiple entries in the table for the same function? 
 }
