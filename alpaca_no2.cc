@@ -492,6 +492,7 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
         
+<<<<<<< HEAD
         string mode = string(argv[argc-2]);
         if(mode == "float") return_mode = FLOAT;
         else if(mode == "struct") return_mode = LARGE;
@@ -500,6 +501,10 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 fprintf(stderr, "Invalid return type mode %s\n", mode.c_str());
                 exit(3);
         }
+=======
+        fpmode = string(argv[argc-2]).compare("fp") == 0;
+        argv[argc-2] = NULL;
+>>>>>>> f17b6c7224350d8c37d4b0cf4cb6b222ceddaaa9
 
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
@@ -539,7 +544,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         energy_file.seekg(0);
         energy_file >> energy_after;
 
-        fprintf(stderr, "Original energy consumption: %llu\n", (energy_after-energy_before));
+        printf("Original energy consumption: %llu\n", (energy_after-energy_before));
         energy_file.close();
         file.close();
         

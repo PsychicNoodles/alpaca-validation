@@ -184,7 +184,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         energy_file.seekg(0); 
         energy_file >> energy_after;
-        fprintf(stderr, "Energy with disabled function: %llu\n", (energy_after-energy_before));
+        printf("Energy with disabled function: %llu\n", (energy_after-energy_before));
         
         energy_file.close();
         file.close();
