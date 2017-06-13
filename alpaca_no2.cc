@@ -42,7 +42,10 @@ enum ReturnMode{
         LARGE
 };
 
-fstream file; //for logging later
+uint64_t mem_writing; 
+uint64_t write_count; 
+fstream return_file; //for logging later
+fstream write_file; //for logging later
 uint64_t func_address; //the address of the target function
 ReturnMode return_mode;
 uint64_t offset; //offset of the main exectuable
@@ -58,7 +61,8 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data);
 void find_address(const char* file_path, string func_name);
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
-bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context);
+bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
+void mimic_writes(uint64_t dest_address);
 void shut_down();
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
@@ -145,9 +149,50 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
         return 0; 
 }
 
+uint64_t find_destination(const ud_operand_t* instrct, ucontext_t* context) {
+        int64_t offset; //displacement offset
+
+        switch(instrct->offset) {
+        case 8:
+                offset = (int8_t) instrct->lval.sbyte;
+                break; 
+        case 16:
+                offset = (int16_t) instrct->lval.sword;
+                break;
+        case 32:
+                offset = (int32_t) instrct->lval.sdword;
+                break;
+        case 64:
+                offset = (int64_t) instrct->lval.sqword;
+                break;
+        default:
+                offset = 0;
+        }
+
+        fprintf(stderr, "offset: %lu, base: %lu, index: %lu, scale: %u\n", offset, get_register(instrct->base, context), get_register(instrct->index, context), instrct->scale);
+        //calculating the memory address based on assembly register information 
+        return (uint64_t) (offset +
+                           get_register(instrct->base, context) +
+                           (get_register(instrct->index, context)*
+                            instrct->scale));
+}
+
 void test_operand(ud_t* obj, int n, ucontext_t* context) {
-        if (just_read(obj, n, context)) fprintf(stderr, "read in operand %d\n", n);
-        else fprintf(stderr, "write in operand %d -- not supported yet\n", n);
+        fprintf(stderr, "test_operand with n=%d\n", n);
+        
+        const ud_operand_t* instrct = ud_insn_opr(obj, n);
+        
+        bool is_mem_opr = instrct->type == UD_OP_MEM;   
+        fprintf(stderr, "is_mem_opr: %s\n", is_mem_opr ? "true" : "false");
+        fprintf(stderr, "base of opr %d: %d\n", n, instrct->base);
+
+        if (is_mem_opr) {
+                uint64_t mem_address = find_destination(instrct, context);
+                fprintf(stderr, "memory address after find destination: %p\n", (void*)mem_address);
+                
+                if (just_read(mem_address, is_mem_opr, context)) fprintf(stderr, "read in operand %d\n", n);
+                else mem_writing = mem_address;
+        }
 }
 
 void initialize_ud(ud_t* ud_obj) {
@@ -165,10 +210,17 @@ void initialize_ud(ud_t* ud_obj) {
  * void* cont: context of the instruction with general register informatio
  */
 void trap_handler(int signal, siginfo_t* info, void* cont) {
+        
         fprintf(stderr, "in trap handler\n");
         if (signal != SIGTRAP) {
                 fprintf(stderr, "Signal received not SIGTRAP\n");
                 exit(2);
+        }
+
+        //logging writes
+        if (mem_writing != 0) {
+                mimic_writes(mem_writing);
+                mem_writing = 0;
         }
 
         //used to keep track of the stack manipulation 
@@ -222,9 +274,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 
                         if(call_count < 0) {
                                 fprintf(stderr, "returned from target function\n");
+                                
+                                 //keep track of writing number
+                                fprintf(stderr, "write_count: %lu\n", write_count);
+                                return_file.write((char*) &write_count, sizeof(uint64_t));
 
                                 for(int i = 0; i < 4; i++) {
-                                        file.write((char*) &xmm[i], sizeof(uint32_t));
+                                        return_file.write((char*) &xmm[i], sizeof(uint32_t));
                                 }
 
                                 if (!non_regular_start) {
@@ -237,21 +293,25 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 non_regular_start = false; 
                                 run = 0;
                                 call_count = 0;
+                                write_count = 0;
 
                                 return;
                         }
-                } else if(return_mode == LARGE) {{
+                } else if(return_mode == LARGE) {
                         uint64_t rax = context->uc_mcontext.gregs[REG_RAX]; 
                         fprintf(stderr, "rdx value: %p\n", (void*)(context->uc_mcontext.gregs[REG_RDX]));
                         fprintf(stderr, "also rax value: %p\n", (void*) context->uc_mcontext.gregs[REG_RAX]);
+                         fprintf(stderr, "write_count: %lu\n", write_count);
                         //each call may have its own return, so final return will give a negative count
                         if(call_count < 0) {
                                 fprintf(stderr, "returned from target function\n");
-                                //logging 
+                                //logging
+
+                                return_file.write((char*) &write_count, sizeof(uint64_t));
                                 uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
                                 uint32_t lval = htonl(rax & 0xFFFFFFFF);
-                                file.write((char*) &hval, sizeof(hval));
-                                file.write((char*) &lval, sizeof(lval));
+                                return_file.write((char*) &hval, sizeof(hval));
+                                return_file.write((char*) &lval, sizeof(lval));
 
                                 if (!non_regular_start) {
                                         //stops single-stepping
@@ -263,20 +323,22 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 non_regular_start = false; 
                                 run = 0;
                                 call_count = 0;
+                                write_count = 0;
                                 return;
                         }
-                }
                 } else {
                         uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
                         fprintf(stderr, "rax value: %lu\n", rax);
+                         fprintf(stderr, "write_count: %lu\n", write_count);
                         //each call may have its own return, so final return will give a negative count
                         if(call_count < 0) {
                                 fprintf(stderr, "returned from target function\n");
-                                //logging 
+                                //logging
+                                return_file.write((char*) &write_count, sizeof(uint64_t));
                                 uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
                                 uint32_t lval = htonl(rax & 0xFFFFFFFF);
-                                file.write((char*) &hval, sizeof(hval));
-                                file.write((char*) &lval, sizeof(lval));
+                                return_file.write((char*) &hval, sizeof(hval));
+                                return_file.write((char*) &lval, sizeof(lval));
 
                                 if (!non_regular_start) {
                                         //stops single-stepping
@@ -288,6 +350,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 non_regular_start = false; 
                                 run = 0;
                                 call_count = 0;
+                                write_count = 0;
                                 return;
                         }
                 }
@@ -332,11 +395,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 fprintf(stderr, "known potential write 1 op instruction\n");
                 test_operand(&ud_obj, 0, context);
                 break;
-                        
+                //readonly 2 operand instructions
+        case UD_Ilea: case UD_Icmp:
+                break;
                 //known potential writes with 2 operands
         case UD_Imov:
                 fprintf(stderr, "known potential write 2 op instruction\n");
-                test_operand(&ud_obj, 1, context);
+                test_operand(&ud_obj, 0, context);
                 break;
 
         default:
@@ -363,48 +428,34 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
    
 }
 
+//what happens to 3-operand instructions? 
+void mimic_writes(uint64_t dest_address) {
+        write_count++;
+        fprintf(stderr, "writing to address: %p\n",(void*) dest_address);
+        size_t size = sizeof(uint64_t); 
+        //log destination of the write
+
+        uint64_t val = *((uint64_t*)dest_address); 
+        
+        write_file.write((char*) &dest_address, sizeof(dest_address));
+        write_file.write((char*) &val, size);
+}
 /**
  * Checks if the next instruction will only read or also write to memory
  * ud_t* obj: pointer to the object that disassembles the next instruction 
- * n: the position of the operand we inspect; 0 for source, 1 for destination
+ * n: the position of the operand we inspect; destination is the last one 
  * context: context from the handler with general register information 
  * @returns bool: true if no writes to memory; false otherwise. 
  */
-bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
-        const ud_operand_t* instrct = ud_insn_opr(obj, n);
-        if (instrct->type == UD_OP_MEM) {
-                uint64_t mem_address; //address of the destination
-                int64_t offset; //displacement offset
-
-                switch(instrct->offset) {
-                case 8:
-                        offset = (int8_t) instrct->lval.sbyte;
-                        break; 
-                case 16:
-                        offset = (int16_t) instrct->lval.sword;
-                        break;
-                case 32:
-                        offset = (int32_t) instrct->lval.sdword;
-                        break;
-                case 64:
-                        offset = (int64_t) instrct->lval.sqword;
-                        break;
-                default:
-                        offset = 0;
-                }
-
-                //calculating the memory address based on assembly register information 
-                mem_address = offset +
-                        get_register(instrct->base, context) +
-                        (get_register(instrct->index, context)*
-                         instrct->scale);
-
+bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
+        if (is_mem_opr) {
                 //if the instruction tries to access memory outside of the current
                 //stack frame, we know it writes to memory 
                 uint64_t instr_ptr = context->uc_mcontext.gregs[REG_RIP];
 
-                return ((uintptr_t) stack > mem_address &&
-                        instr_ptr < mem_address); 
+                fprintf(stderr, "stack frame is %p to %p\n", (void*) stack, (void*) instr_ptr);
+
+                return ((uintptr_t) stack > mem_address && instr_ptr < mem_address); 
         }
 
         //if the instruction doesn't touch memory then it's fine
@@ -418,6 +469,8 @@ bool just_read(const ud_t* obj, unsigned int n, ucontext_t* context) {
  */
 uint64_t get_register(ud_type_t obj, ucontext_t* context) {
         switch(obj) {
+        case UD_R_RIP:
+                return context->uc_mcontext.gregs[REG_RIP];
         case UD_R_RAX:
                 return context->uc_mcontext.gregs[REG_RAX];
         case UD_R_RCX:
@@ -466,7 +519,7 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
         if (sig != SIGSEGV) {
                 fprintf(stderr, "should not be here\n");
                 exit(2); 
-        };
+        }
 
         fprintf(stderr, "in SEG handler\n");
         fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
@@ -509,7 +562,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         dl_iterate_phdr(callback, NULL);
         find_address("/proc/self/exe", func_name);
-        
+
         //set up for the SIGTRAP signal handler
         struct sigaction sig_action, debugger;
         memset(&sig_action, 0, sizeof(sig_action));
@@ -517,18 +570,20 @@ static int wrapped_main(int argc, char** argv, char** env) {
         sigemptyset(&sig_action.sa_mask);
         sig_action.sa_flags = SA_SIGINFO;
         sigaction(SIGTRAP, &sig_action, 0);
-
-                
+   
         //for the debugger
         memset(&debugger, 0, sizeof(debugger));
         debugger.sa_sigaction = seg_handler;
         sigemptyset(&debugger.sa_mask);
         debugger.sa_flags = SA_SIGINFO;
         sigaction(SIGSEGV, &debugger, 0);
-                
+
+        write_count = 0;
         single_step(func_address);
 
-        file.open("read-logger", fstream::out | fstream::trunc | fstream::binary);
+        return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
+
+        write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
                 
         ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", fstream::in);
         unsigned long long energy_before, energy_after;
@@ -541,7 +596,8 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         printf("Original energy consumption: %llu\n", (energy_after-energy_before));
         energy_file.close();
-        file.close();
+        return_file.close();
+        write_file.close();
         
         return 0; 
 }
@@ -555,6 +611,7 @@ extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void 
                 void (*fini)(), void (*rtld_fini)(), void* stack_end) {
 
         //Find original __libc_start_main
+        
         auto og_libc_start_main = (decltype(__libc_start_main)*)dlsym(RTLD_NEXT, "__libc_start_main");
 
         //Save original main function
