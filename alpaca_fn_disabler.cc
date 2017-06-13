@@ -28,12 +28,14 @@ enum ReturnMode{
         LARGE
 };
 
-std::fstream file; //for logging later
+std::fstream return_file; //for logging later
+std::fstream write_file; //for logging later
 uint64_t func_address; //the address of the target function
 ReturnMode return_mode;
 uint64_t offset; //offset of the main exectuable
 queue<uint64_t> rets; //return values for the disabler function
 queue<double> fprets;
+queue<uint64_t> writes; //returning from write-logger
 queue<void*> ptrrets;
 
 typedef int (*main_fn_t)(int, char**, char**);
@@ -42,6 +44,7 @@ main_fn_t og_main;
 static int callback(struct dl_phdr_info *info, size_t size, void *data);
 void find_address(const char* file_path, string func_name);
 void shut_down();
+void mimic_writes(uint64_t write_count);
 
 /**
  * Locates the address of the target function
@@ -92,21 +95,43 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
 }
 
 uint64_t int_disabled_func() {
-        uint64_t val = rets.front();
+        uint64_t write_count = rets.front();
+        rets.pop();
+        if (write_count != 0) mimic_writes(write_count); 
+        uint64_t val =  rets.front();
         rets.pop();
         return val;
 }
 
 double double_disabled_func() {
+        uint64_t write_count =(uint64_t) fprets.front();
+        fprets.pop();
+        if (write_count != 0) mimic_writes(write_count); 
         double val = fprets.front();
         fprets.pop();
         return val;
 }
 
 void* large_disabled_func() {
+        uint64_t write_count =(uint64_t) ptrrets.front();
+        ptrrets.pop();
+        if (write_count != 0) mimic_writes(write_count); 
         void* ptr = ptrrets.front();
         ptrrets.pop();
         return ptr;
+}
+
+void mimic_writes(uint64_t write_count) {
+        fprintf(stderr, "mimicing writes with count %lu\n", write_count);
+        for(int i = 0; i < write_count; i++){
+                uint64_t* memory_dest = (uint64_t*) writes.front();
+                writes.pop();
+                uint64_t val = writes.front();
+                writes.pop();
+
+                *memory_dest = val;
+                fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
+        }
 }
 
 /**
@@ -135,32 +160,37 @@ static int wrapped_main(int argc, char** argv, char** env) {
         
        
         string line; 
-        file.open("read-logger", std::fstream::in | std::fstream::binary);
+        return_file.open("return-logger", std::fstream::in | std::fstream::binary);
+        write_file.open("write-logger", std::fstream::in | std::fstream::binary);
 
-        while(!file.eof()) {
+        while (!write_file.eof()) {
+                uint64_t buffer; 
+                write_file.read((char*) &buffer, sizeof(uint64_t));
+                writes.push(buffer); 
+        }
+        while(!return_file.eof()) {
                 if(return_mode == FLOAT) {
                         uint32_t buffer[4];
                         for(int i = 0; i < 4; i++) {
-                                file.read((char*) &buffer[i], sizeof(uint32_t));
+                                return_file.read((char*) &buffer[i], sizeof(uint32_t));
                         }
 
                         fprets.push(*((double*)buffer));
                 } else if(return_mode == LARGE) {
                         uint32_t buffer[2] = {0};
-                        file.read((char*)buffer, sizeof(buffer));
+                        return_file.read((char*)buffer, sizeof(buffer));
 
                         uint64_t p = ((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
                         ptrrets.push((void*)p);
                 } else if(return_mode == INT) {
                         uint32_t buffer[2] = {0};
-                        file.read((char*)buffer, sizeof(buffer));
+                        return_file.read((char*)buffer, sizeof(buffer));
 
                         rets.push((uint64_t)ntohl(buffer[0]) << 32 | (uint64_t)ntohl(buffer[1]));
                 } else {
                         fprintf(stderr, "Invalid return type mode\n");
                         exit(3);
                 }
-
         }
 
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
@@ -180,6 +210,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         unsigned long long energy_before, energy_after; 
         energy_file >> energy_before;
 
+        fprintf(stderr, "starting main\n");
         og_main(argc, argv, env);
 
         energy_file.seekg(0); 
@@ -187,7 +218,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         printf("Energy with disabled function: %llu\n", (energy_after-energy_before));
         
         energy_file.close();
-        file.close();
+        return_file.close();
     
         return 0; 
 }
