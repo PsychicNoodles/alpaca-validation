@@ -21,7 +21,7 @@ int main () {
 
         //printf("%s\n", s.c_str());
 
-        printf("a address after writing func call: %p\n", &a);
+        printf("a address and value after writing func call: %d, %p\n", a, &a);
         return 0; 
 
 

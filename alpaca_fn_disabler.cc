@@ -35,6 +35,7 @@ ReturnMode return_mode;
 uint64_t offset; //offset of the main exectuable
 queue<uint64_t> rets; //return values for the disabler function
 queue<double> fprets;
+queue<uint64_t> write_count; 
 queue<uint64_t> writes; //returning from write-logger
 queue<void*> ptrrets;
 
@@ -95,27 +96,30 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
 }
 
 uint64_t int_disabled_func() {
-        uint64_t write_count = rets.front();
-        rets.pop();
-        if (write_count != 0) mimic_writes(write_count); 
+        uint64_t wc = write_count.front();
+        write_count.pop();
+        if (wc != 0) mimic_writes(wc);
+        
         uint64_t val =  rets.front();
         rets.pop();
         return val;
 }
 
 double double_disabled_func() {
-        uint64_t write_count =(uint64_t) fprets.front();
-        fprets.pop();
-        if (write_count != 0) mimic_writes(write_count); 
+        uint64_t wc =write_count.front();
+        write_count.pop();
+        if (wc != 0) mimic_writes(wc);
+        
         double val = fprets.front();
         fprets.pop();
         return val;
 }
 
 void* large_disabled_func() {
-        uint64_t write_count =(uint64_t) ptrrets.front();
-        ptrrets.pop();
-        if (write_count != 0) mimic_writes(write_count); 
+        uint64_t wc =write_count.front();
+        write_count.pop();
+        if (wc != 0) mimic_writes(wc);
+        
         void* ptr = ptrrets.front();
         ptrrets.pop();
         return ptr;
@@ -168,7 +172,12 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 write_file.read((char*) &buffer, sizeof(uint64_t));
                 writes.push(buffer); 
         }
+        
         while(!return_file.eof()) {
+                uint64_t wr_buffer;
+                return_file.read((char*) &wr_buffer, sizeof(uint64_t));
+                write_count.push(wr_buffer);
+                
                 if(return_mode == FLOAT) {
                         uint32_t buffer[4];
                         for(int i = 0; i < 4; i++) {
