@@ -1,10 +1,10 @@
 #define _GNU_SOURCE
-#include <dlfcn.h>
+
+#include "alpaca_shared.hh"
 
 //citations: modified example code from
 //https://github.com/aclements/libelfin/blob/master/examples/dump-syms.cc
 #include "elf++.hh" //parsing the binary file 
-#include "interpose.hh" //interposing exit functions
 #include "x86jump.h" //jumping to function disabler
 #include <udis86.h> //interpreting assembly instructions
 
@@ -14,7 +14,6 @@
 #include <cstdlib>
 
 #include <execinfo.h>
-#include <fcntl.h>
 #include <fstream>
 #include <inttypes.h>
 #include <link.h>
@@ -36,12 +35,6 @@
 
 using namespace std;
 
-enum ReturnMode{
-        INT,
-        FLOAT,
-        LARGE
-};
-
 uint64_t mem_writing; 
 uint64_t write_count;
 uint64_t* stack_base; 
@@ -49,7 +42,6 @@ fstream return_file; //for logging later
 fstream write_file; //for logging later
 uint64_t func_address; //the address of the target function
 ReturnMode return_mode;
-uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 queue<uint64_t> rets; //return values for the disabler function
 
@@ -57,61 +49,13 @@ typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 //function declarations
-static int callback(struct dl_phdr_info *info, size_t size, void *data);
-void find_address(const char* file_path, string func_name);
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
 void mimic_writes(uint64_t dest_address);
-void shut_down();
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 
-/**
- * Locates the address of the target function
- * file_path: the path to the binary file
- * func_name: the name of the target function
- */
-void find_address(const char* file_path, string func_name) {
-        uint64_t addr = 0;
-
-        int read_fd = open(file_path, O_RDONLY);
-        if (read_fd < 0) {
-                fprintf(stderr, "%s: %s\n", file_path, strerror(errno));
-                exit(2);
-        }
-
-        elf::elf f(elf::create_mmap_loader(read_fd));
-        for (auto &sec : f.sections()) {
-                if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
-
-              
-                fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
-                fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
-                                "Address", "Size", "Binding", "Index", "Name", "Type");
-                
-
-                for (auto sym : sec.as_symtab()) {
-                        auto &d = sym.get_data();
-                        if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
-
-                        
-                        //probably will end up writing to log_fd
-                        fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
-                                        offset + d.value, d.size,
-                                        to_string(d.binding()).c_str(),
-                                        to_string(d.shnxd).c_str(),
-                                        sym.get_name().c_str(),
-                                        to_string(d.type()).c_str());
-                        
-
-                        addr = offset + d.value; 
-                }
-        }
-       
-        func_address = addr;
-        //potential problem with multiple entries in the table for the same function? 
-}
 
 /**
  * Enables single-stepping (instruction by instruction) through the function
@@ -129,24 +73,6 @@ void single_step(uint64_t func_address) {
         //setting the last byte to 0xCC causes a SIGTRAP signal for single-stepping
         func_start_byte = ((uint8_t*)func_address)[0];
         ((uint8_t*)func_address)[0] = 0xCC;
-}
-
-/**
- * Accesses the entry for the main executable on first execution of callback
- * Passed as a parameter to dl_iterate_phdr()
- * dl_phdr_info: a pointer to a structure containing info about the shared object 
- * size: size of the shared object 
- * data: a copy of value passed by dl_iterate_phdr();
- * @returns a non-zero value until there are no shared objects to be processed. 
- */
-static int callback(struct dl_phdr_info *info, size_t size, void *data) {
-        // or info->dlpi_name == "\0" if first run doesn't work ?
-        static int run = 0;
-        if (run) return 0;
-
-        offset = info->dlpi_addr; 
-        run = 1;
-        return 0; 
 }
 
 uint64_t find_destination(const ud_operand_t* instrct, ucontext_t* context) {
@@ -551,24 +477,15 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
  */
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
-        
-        string mode = string(argv[argc-2]);
-        if(mode == "float") return_mode = FLOAT;
-        else if(mode == "struct") return_mode = LARGE;
-        else if(mode == "int") return_mode = INT;
-        else {
-                fprintf(stderr, "Invalid return type mode %s\n", mode.c_str());
-                exit(3);
-        }
 
+        return_mode = parse_argv(argc, argv);
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
         argv[argc-1] = NULL;
-
+        argv[argc-2] = NULL;
         argc -= 2;
 
-        dl_iterate_phdr(callback, NULL);
-        find_address("/proc/self/exe", func_name);
+        func_address = find_address("/proc/self/exe", func_name);
 
         //set up for the SIGTRAP signal handler
         struct sigaction sig_action, debugger;
@@ -626,23 +543,4 @@ extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void 
 
         //Running original __libc_start_main with wrapped main
         return og_libc_start_main(wrapped_main, argc, argv, init, fini, rtld_fini, stack_end); 
-}
-
-INTERPOSE (exit)(int rc) {
-        shut_down();
-        real::exit(rc);
-}
-
-INTERPOSE (_exit)(int rc) {
-        shut_down();
-        real::_exit(rc); 
-}
-
-INTERPOSE (_Exit)(int rc) {
-        shut_down();
-        real::_Exit(rc); 
-}
-
-void shut_down() {
-        //close(log_fd);
 }
