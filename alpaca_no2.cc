@@ -411,11 +411,15 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 int i = 0;
                 do {
                         if ((op = (ud_operand_t*) ud_insn_opr(&ud_obj, i)) != NULL) {
-                                fprintf(stderr, "testing operand %d\n", i);
-                                test_operand(&ud_obj, i, context);
+                                if (i > 1) {
+                                        fprintf(stderr, "3-operand instructions not supported yet\n");
+                                        exit(2);
+                                }
                         }
                         i++;
                 } while (i < MAX_OPERANDS && op != NULL);
+
+                test_operand(&ud_obj, 0, context); 
                 break;
         }
 
