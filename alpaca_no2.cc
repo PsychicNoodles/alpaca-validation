@@ -43,14 +43,14 @@ enum ReturnMode{
 };
 
 uint64_t mem_writing; 
-uint64_t write_count; 
+uint64_t write_count;
+uint64_t* stack_base; 
 fstream return_file; //for logging later
 fstream write_file; //for logging later
 uint64_t func_address; //the address of the target function
 ReturnMode return_mode;
 uint64_t offset; //offset of the main exectuable
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
-uint64_t* stack; //a pointer to the beginning of the stack
 queue<uint64_t> rets; //return values for the disabler function
 
 typedef int (*main_fn_t)(int, char**, char**);
@@ -174,7 +174,7 @@ uint64_t find_destination(const ud_operand_t* instrct, ucontext_t* context) {
         return (uint64_t) (offset +
                            get_register(instrct->base, context) +
                            (get_register(instrct->index, context)*
-                            instrct->scale));
+                            instrct->scale)); 
 }
 
 void test_operand(ud_t* obj, int n, ucontext_t* context) {
@@ -191,7 +191,7 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
                 fprintf(stderr, "memory address after find destination: %p\n", (void*)mem_address);
                 
                 if (just_read(mem_address, is_mem_opr, context)) fprintf(stderr, "read in operand %d\n", n);
-                else mem_writing = mem_address;
+                else mem_writing = mem_address + ud_insn_len(obj);
         }
 }
 
@@ -218,6 +218,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         }
 
         //logging writes
+        fprintf(stderr, "mem_writing = %p\n", (void*)mem_writing);
         if (mem_writing != 0) {
                 mimic_writes(mem_writing);
                 mem_writing = 0;
@@ -236,13 +237,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 fprintf(stderr, "func_start_byte is 0x55\n");
                 if (!run) {
                         //Faking the %rbp stack push to account for the 0xCC byte overwrite
-                        stack = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
+                        stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
                         uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
 
                         //needs further explanation 
-                        stack--;
-                        *stack = frame;
-                        context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack;
+                        stack_base--;
+                        *stack_base = frame;
+                        context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack_base;
 
                         initialize_ud(&ud_obj);
 
@@ -450,12 +451,14 @@ void mimic_writes(uint64_t dest_address) {
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
         if (is_mem_opr) {
                 //if the instruction tries to access memory outside of the current
-                //stack frame, we know it writes to memory 
-                uint64_t instr_ptr = context->uc_mcontext.gregs[REG_RIP];
+                //stack frame, we know it writes to memory
 
-                fprintf(stderr, "stack frame is %p to %p\n", (void*) stack, (void*) instr_ptr);
-
-                return ((uintptr_t) stack > mem_address && instr_ptr < mem_address); 
+                // -128 = red zone
+                uint64_t stack_ptr = context->uc_mcontext.gregs[REG_RSP] - 128;
+                
+                fprintf(stderr, "stack frame rsp is %p to %p\n", (void*) stack_base, (void*) stack_ptr);
+                
+                return ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address); 
         }
 
         //if the instruction doesn't touch memory then it's fine

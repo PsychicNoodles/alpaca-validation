@@ -2,9 +2,13 @@
 #include <stdio.h>
 int a; 
 int writing_func() {
-        printf("in the writing func \n");
+//        printf("in the writing func \n");
         a = 777;
-        return 66;
+        int b = 0;
+        b = 8;
+        int c = 1;
+        c = 10;
+        return b;
 }
 
 
@@ -13,11 +17,11 @@ int main () {
         a = 0;
         
         //char* str = "hey"; 
-        if (writing_func() == 66) printf("yeey\n");
+        writing_func();
 
         //printf("%s\n", s.c_str());
 
-        printf("a value after writing func call: %d\n", a);
+        printf("a address after writing func call: %p\n", &a);
         return 0; 
 
 
