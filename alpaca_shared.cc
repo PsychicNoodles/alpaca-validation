@@ -78,6 +78,49 @@ ReturnMode parse_argv(int argc, char** argv) {
         }
 }
 
+string file_readline(string path) {
+        ifstream in(path);
+        string str;
+        in >> str;
+        return str;
+}
+
+vector<string> find_in_dir(string dir, string substr) {
+        vector<string> res;
+        DIR* dirp = opendir(dir.c_str());
+        struct dirent* dp;
+        while((dp = readdir(dirp)) != NULL) {
+                string path = string(dp->d_name);
+                if(path.find(substr) != string::npos) {
+                        res.push_back(path);
+                }
+        }
+        closedir(dirp);
+        return res;
+}
+
+void push_energy_info(map<string, uint64_t>* readings, string dir) {
+        string name = file_readline(dir + ENERGY_NAME);
+        uint64_t energy;
+        istringstream(file_readline(dir + ENERGY_FILE)) >> energy;
+        readings->insert(make_pair(name, energy));
+}
+
+map<string, uint64_t> measure_energy() {
+        map<string, uint64_t> readings;
+        vector<string> powerzones = find_in_dir(ENERGY_ROOT, "intel-rapl:");
+        for(auto &zone : powerzones) {
+                string zonedir = string(ENERGY_ROOT) + "/" + zone + "/";
+                push_energy_info(&readings, zonedir);
+                vector<string> subzones = find_in_dir(zonedir, zone);
+                for(auto &sub : subzones) {
+                        // path join in C++
+                        push_energy_info(&readings, zonedir + sub + "/");
+                }
+        }
+        return readings;
+}
+
 INTERPOSE (exit)(int rc) {
         shut_down();
         real::exit(rc);

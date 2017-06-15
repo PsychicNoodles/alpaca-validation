@@ -147,19 +147,17 @@ static int wrapped_main(int argc, char** argv, char** env) {
         else if(return_mode == LARGE) new((void*)func_address) X86Jump((void*) large_disabled_func);
         else if(return_mode == INT) new((void*)func_address) X86Jump((void*)int_disabled_func);
 
-        //energy measurements and running the input program 
-        fstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", ios_base::in);
-        unsigned long long energy_before, energy_after; 
-        energy_file >> energy_before;
-
-        fprintf(stderr, "starting main\n");
+        map<string, uint64_t> start_readings = measure_energy();
+        
         og_main(argc, argv, env);
 
-        energy_file.seekg(0); 
-        energy_file >> energy_after;
-        printf("Energy with disabled function: %llu\n", (energy_after-energy_before));
+        map<string, uint64_t> end_readings = measure_energy();
+
+        printf("Energy consumption (%lu):\n", end_readings.size());
+        for(auto &ent : end_readings) {
+                printf("%s: %lu\n", ent.first.c_str(), ent.second - start_readings.at(ent.first));
+        }
         
-        energy_file.close();
         return_file.close();
     
         return 0; 

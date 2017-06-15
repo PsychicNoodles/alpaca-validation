@@ -506,20 +506,19 @@ static int wrapped_main(int argc, char** argv, char** env) {
         single_step(func_address);
 
         return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
-
         write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
                 
-        ifstream energy_file("/sys/class/powercap/intel-rapl/intel-rapl:0/energy_uj", fstream::in);
-        unsigned long long energy_before, energy_after;
-        energy_file >> energy_before;
+        map<string, uint64_t> start_readings = measure_energy();
         
         og_main(argc, argv, env);
 
-        energy_file.seekg(0);
-        energy_file >> energy_after;
+        map<string, uint64_t> end_readings = measure_energy();
 
-        printf("Original energy consumption: %llu\n", (energy_after-energy_before));
-        energy_file.close();
+        printf("Energy consumption (%lu):\n", end_readings.size());
+        for(auto &ent : end_readings) {
+                printf("%s: %lu\n", ent.first.c_str(), ent.second - start_readings.at(ent.first));
+        }
+
         return_file.close();
         write_file.close();
         

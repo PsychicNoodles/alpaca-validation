@@ -5,7 +5,18 @@
 #include <link.h>
 #include <unistd.h>
 
+#include <sys/types.h>
+#include <dirent.h>
+
+#include <sstream>
 #include <string>
+#include <map>
+#include <fstream>
+
+#define ENERGY_ROOT "/sys/class/powercap/intel-rapl/"
+#define ENERGY_NAME "name"
+#define ENERGY_FILE "energy_uj"
+#define ENERGY_LINE_CAPACITY 1024
 
 using namespace std;
 
@@ -23,3 +34,5 @@ enum ReturnMode{
 uint64_t find_address(const char* file_path, string func_name);
 
 ReturnMode parse_argv(int argc, char** argv);
+
+map<string, uint64_t> measure_energy();
