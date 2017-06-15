@@ -32,6 +32,7 @@
 
 #define PAGE_SIZE 4096
 #define MAX_OPERANDS 126
+#define NUM_RET_REGS 12
 
 using namespace std;
 
@@ -41,15 +42,18 @@ uint64_t* stack_base;
 fstream return_file; //for logging later
 fstream write_file; //for logging later
 uint64_t func_address; //the address of the target function
-ReturnMode return_mode;
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 queue<uint64_t> rets; //return values for the disabler function
+
+ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_EAX, UD_R_EDX, UD_R_AX, UD_R_DX, UD_R_AH, UD_R_AL, UD_R_DH, UD_R_DL, UD_R_XMM0, UD_R_XMM1};
+bool ret_regs_touched[NUM_RET_REGS] = {false}; 
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 //function declarations
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
+uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
 void mimic_writes(uint64_t dest_address);
@@ -73,6 +77,8 @@ void single_step(uint64_t func_address) {
         //setting the last byte to 0xCC causes a SIGTRAP signal for single-stepping
         func_start_byte = ((uint8_t*)func_address)[0];
         ((uint8_t*)func_address)[0] = 0xCC;
+
+        //switch back to old permissions
 }
 
 uint64_t find_destination(const ud_operand_t* instrct, ucontext_t* context) {
@@ -108,8 +114,11 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
         
         const ud_operand_t* instrct = ud_insn_opr(obj, n);
         
-        bool is_mem_opr = instrct->type == UD_OP_MEM;   
+        bool is_mem_opr = instrct->type == UD_OP_MEM;
+        bool is_reg_opr = instrct->type == UD_OP_REG;
+        
         fprintf(stderr, "is_mem_opr: %s\n", is_mem_opr ? "true" : "false");
+        fprintf(stderr, "is_reg_opr: %s\n", is_reg_opr ? "true" : "false");
         fprintf(stderr, "base of opr %d: %d\n", n, instrct->base);
 
         if (is_mem_opr) {
@@ -118,6 +127,11 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
                 
                 if (just_read(mem_address, is_mem_opr, context)) fprintf(stderr, "read in operand %d\n", n);
                 else mem_writing = mem_address + ud_insn_len(obj);
+        } else if (is_reg_opr) {
+
+                for (int i = 0; i < NUM_RET_REGS; i ++) {
+                        if (instrct->base == ret_regs[i]) ret_regs_touched[i] = true; 
+                }
         }
 }
 
@@ -127,6 +141,36 @@ void initialize_ud(ud_t* ud_obj) {
         ud_set_syntax(ud_obj, UD_SYN_ATT);
         ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
 }
+
+void log_returns(ucontext_t* context) {
+
+        uint64_t wc = write_count; 
+        return_file.write((char*) &wc, 8);
+
+        uint16_t flag = 0; 
+        //which/how many registers we're writing to
+        for (int i = 0; i < NUM_RET_REGS; i++) {
+                if (ret_regs_touched[i]) flag |= (1 << i);
+        }
+
+        fprintf(stderr, "writing flag: %d\n", flag);
+        return_file.write((char*) &flag, 1);
+
+        for (int i = 0; i < NUM_RET_REGS; i++) {
+                if (ret_regs_touched[i]) {
+                        if(i < 10) { //integer types
+                                uint64_t buf = get_register(ret_regs[i], context);
+                                return_file.write((char*) &buf, 8);
+                        } else { //floating point types
+                                uint32_t* buf = get_fp_register(ret_regs[i], context);
+                                for(int j = 0; j < 4; j++) return_file.write((char*) &buf[j], 4);
+                        }
+                }
+        }
+}
+
+
+
 /**
  * Initially catches the SIGTRAP signal cause by INT3(0xCC) followed by catching a TRAP FLAG
  * Analyzes next instruction's effects by parsing assembly information 
@@ -195,91 +239,30 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         if (return_reached) {
                 call_count--;
                 return_reached = false;
-                if(return_mode == FLOAT) {
-                        uint32_t* xmm = context->uc_mcontext.fpregs->_xmm[0].element;
-                        fprintf(stderr, "xmm0 value: %d, %d, %d, %d\n", xmm[0], xmm[1], xmm[2], xmm[3]);
+              
+                if(call_count < 0) {
+                        fprintf(stderr, "returned from target function\n");
                                 
-                        if(call_count < 0) {
-                                fprintf(stderr, "returned from target function\n");
-                                
-                                 //keep track of writing number
-                                fprintf(stderr, "write_count: %lu\n", write_count);
-                                return_file.write((char*) &write_count, sizeof(uint64_t));
+                        //keep track of writing number
+                        fprintf(stderr, "write_count: %lu\n", write_count);
 
-                                for(int i = 0; i < 4; i++) {
-                                        return_file.write((char*) &xmm[i], sizeof(uint32_t));
-                                }
-
-                                if (!non_regular_start) {
-                                        //stops single-stepping
-                                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-                                }
-
-                                single_step(func_address); 
-
-                                non_regular_start = false; 
-                                run = 0;
-                                call_count = 0;
-                                write_count = 0;
-
-                                return;
+                        log_returns(context);
+                        
+                        if (!non_regular_start) {
+                                //stops single-stepping
+                                context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
                         }
-                } else if(return_mode == LARGE) {
-                        uint64_t rax = context->uc_mcontext.gregs[REG_RAX]; 
-                        fprintf(stderr, "rdx value: %p\n", (void*)(context->uc_mcontext.gregs[REG_RDX]));
-                        fprintf(stderr, "also rax value: %p\n", (void*) context->uc_mcontext.gregs[REG_RAX]);
-                         fprintf(stderr, "write_count: %lu\n", write_count);
-                        //each call may have its own return, so final return will give a negative count
-                        if(call_count < 0) {
-                                fprintf(stderr, "returned from target function\n");
-                                //logging
 
-                                return_file.write((char*) &write_count, sizeof(uint64_t));
-                                uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
-                                uint32_t lval = htonl(rax & 0xFFFFFFFF);
-                                return_file.write((char*) &hval, sizeof(hval));
-                                return_file.write((char*) &lval, sizeof(lval));
+                        single_step(func_address); 
 
-                                if (!non_regular_start) {
-                                        //stops single-stepping
-                                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-                                }
+                        non_regular_start = false; 
+                        run = 0;
+                        call_count = 0;
+                        write_count = 0;
 
-                                single_step(func_address);
+                        memset(ret_regs_touched, false, NUM_RET_REGS*sizeof(bool)); 
 
-                                non_regular_start = false; 
-                                run = 0;
-                                call_count = 0;
-                                write_count = 0;
-                                return;
-                        }
-                } else {
-                        uint64_t rax = context->uc_mcontext.gregs[REG_RAX];
-                        fprintf(stderr, "rax value: %lu\n", rax);
-                         fprintf(stderr, "write_count: %lu\n", write_count);
-                        //each call may have its own return, so final return will give a negative count
-                        if(call_count < 0) {
-                                fprintf(stderr, "returned from target function\n");
-                                //logging
-                                return_file.write((char*) &write_count, sizeof(uint64_t));
-                                uint32_t hval = htonl((rax >> 32) & 0xFFFFFFFF);
-                                uint32_t lval = htonl(rax & 0xFFFFFFFF);
-                                return_file.write((char*) &hval, sizeof(hval));
-                                return_file.write((char*) &lval, sizeof(lval));
-
-                                if (!non_regular_start) {
-                                        //stops single-stepping
-                                        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-                                }
-
-                                single_step(func_address);
-
-                                non_regular_start = false; 
-                                run = 0;
-                                call_count = 0;
-                                write_count = 0;
-                                return;
-                        }
+                        return;
                 }
         }
 
@@ -330,6 +313,9 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 fprintf(stderr, "known potential write 2 op instruction\n");
                 test_operand(&ud_obj, 0, context);
                 break;
+                //readonly 3 operand instructions
+        case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw:
+                break; 
 
         default:
                 fprintf(stderr, "unknown operation, testing all operands\n");
@@ -395,6 +381,7 @@ bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
         return true;
 }
 
+//expand the list!
 /*
  * Translates from udis's register enum's to register addresses
  * obj: object containing the instruction to be disassembled
@@ -436,11 +423,32 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
                 return context->uc_mcontext.gregs[REG_R14];
         case UD_R_R15:
                 return context->uc_mcontext.gregs[REG_R15];
+        case UD_R_EAX:
+                return context->uc_mcontext.gregs[REG_EAX];
+        case UD_R_AX:
+                return context->uc_mcontext.gregs[REG_AX];
+        case UD_R_AL:
+                return context->uc_mcontext.gregs[REG_AL];
+        case UD_R_AH:
+                return context->uc_mcontext.gregs[REG_AH];
+         case UD_R_DX:
+                return context->uc_mcontext.gregs[REG_DX];
+        case UD_R_DL:
+                return context->uc_mcontext.gregs[REG_DL];
+        case UD_R_DH:
+                return context->uc_mcontext.gregs[REG_DH];             
+                            
         case UD_NONE:
                 return 0;
         default:
                 fprintf(stderr, "32, 16 and 8bit registers are not supported yet\n");
                 return 0; 
+        }
+}
+
+uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context) {
+        switch(obj) {
+        default: return context->uc_mcontext.fpregs->_xmm[0].element;
         }
 }
 
@@ -477,13 +485,11 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
  */
 static int wrapped_main(int argc, char** argv, char** env) {
         fprintf(stderr, "Entered main wrapper\n");
-
-        return_mode = parse_argv(argc, argv);
+        
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-1];  
         argv[argc-1] = NULL;
-        argv[argc-2] = NULL;
-        argc -= 2;
+        argc -= 1;
 
         func_address = find_address("/proc/self/exe", func_name);
 
@@ -521,6 +527,8 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
         return_file.close();
         write_file.close();
+
+        //switch back to old permissions
         
         return 0; 
 }
