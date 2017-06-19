@@ -1,7 +1,6 @@
-all: alpaca_no2.cc
-	clang++ alpaca_shared.cc -g --std=c++11 -rdynamic -shared -fPIC -o alpaca_no2.so alpaca_no2.cc -ldl -ludis86
-	clang -g example.c -o example
-	clang -g prime-test.c -o prime-test
+all: alpaca_shared.cc alpaca_no2.cc alpaca_fn_disabler.cc
+	clang++ alpaca_shared.cc alpaca_no2.cc alpaca_fn_disabler.cc -g --std=c++11 -rdynamic -shared -fPIC -o alpaca.so -ldl -ludis86
 
-disabler: alpaca_fn_disabler.cc
-	clang++ -g --std=c++11 -rdynamic -shared -fPIC -o alpaca_fn_disabler.so alpaca_fn_disabler.cc alpaca_shared.cc -ldl
+check: all
+	gcc test-suite.c -g -o test-suite
+	python run-tests.py

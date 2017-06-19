@@ -1,5 +1,3 @@
-#define _GNU_SOURCE
-
 #include "alpaca_shared.hh"
 
 //citations: modified example code from
@@ -32,31 +30,30 @@
 
 #define PAGE_SIZE 4096
 #define MAX_OPERANDS 126
-#define NUM_RET_REGS 12
+#define NUM_RET_REGS 4
 
 using namespace std;
 
 uint64_t mem_writing; 
+uint64_t* stack_base;
+
 uint64_t write_count;
-uint64_t* stack_base; 
-fstream return_file; //for logging later
-fstream write_file; //for logging later
-uint64_t func_address; //the address of the target function
+
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
+
+
 queue<uint64_t> rets; //return values for the disabler function
-
-ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_EAX, UD_R_EDX, UD_R_AX, UD_R_DX, UD_R_AH, UD_R_AL, UD_R_DH, UD_R_DL, UD_R_XMM0, UD_R_XMM1};
-bool ret_regs_touched[NUM_RET_REGS] = {false}; 
-
-typedef int (*main_fn_t)(int, char**, char**);
-main_fn_t og_main;
+ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
+ud_type_t rax_regs[5] = {UD_R_RAX, UD_R_EAX, UD_R_AX, UD_R_AH, UD_R_AL};
+ud_type_t rdx_regs[5] = {UD_R_RDX, UD_R_EDX, UD_R_DX, UD_R_DH, UD_R_DL};
+bool ret_regs_touched[NUM_RET_REGS] = {false};
 
 //function declarations
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
-void mimic_writes(uint64_t dest_address);
+void mimic_writes_analyzer(uint64_t dest_address);
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 
@@ -66,6 +63,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont);
  * func_address: (virtual) address of the function in memory
  */
 void single_step(uint64_t func_address) {
+//        write_count = 0; //setup
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
         //making the page writable, readable and executable
@@ -126,11 +124,28 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
                 fprintf(stderr, "memory address after find destination: %p\n", (void*)mem_address);
                 
                 if (just_read(mem_address, is_mem_opr, context)) fprintf(stderr, "read in operand %d\n", n);
-                else mem_writing = mem_address + ud_insn_len(obj);
+                else mem_writing = mem_address;
+                if (instrct->base == UD_R_RIP) mem_writing += ud_insn_len(obj);
         } else if (is_reg_opr) {
 
                 for (int i = 0; i < NUM_RET_REGS; i ++) {
-                        if (instrct->base == ret_regs[i]) ret_regs_touched[i] = true; 
+                        if (i == 0) {
+                                 for (int j = 0; j < 5; j++) {
+                                         if (instrct->base == rax_regs[j]) {
+                                                 ret_regs_touched[i] = true;
+                                         }
+                                 }
+                        } else if (i == 1) {
+                                 for (int j = 0; j < 5; j++) {
+                                         if (instrct->base == rdx_regs[j]) {
+                                                 ret_regs_touched[i] = true;
+                                         }
+                                 }
+                        } else {
+                                if (instrct->base == ret_regs[i]) {
+                                        ret_regs_touched[i] = true;
+                                }
+                        }
                 }
         }
 }
@@ -144,10 +159,11 @@ void initialize_ud(ud_t* ud_obj) {
 
 void log_returns(ucontext_t* context) {
 
-        uint64_t wc = write_count; 
-        return_file.write((char*) &wc, 8);
+        uint64_t wc = write_count;
+        fprintf(stderr, "writing write count %lu\n", wc);
+        return_file.write((char*) &wc, sizeof(uint64_t));
 
-        uint16_t flag = 0; 
+        uint8_t flag = 0; 
         //which/how many registers we're writing to
         for (int i = 0; i < NUM_RET_REGS; i++) {
                 if (ret_regs_touched[i]) flag |= (1 << i);
@@ -156,14 +172,25 @@ void log_returns(ucontext_t* context) {
         fprintf(stderr, "writing flag: %d\n", flag);
         return_file.write((char*) &flag, 1);
 
-        for (int i = 0; i < NUM_RET_REGS; i++) {
+        for (int i = 0; i < 4; i++) {
                 if (ret_regs_touched[i]) {
-                        if(i < 10) { //integer types
+                        if(i < 2) { //integer types
                                 uint64_t buf = get_register(ret_regs[i], context);
                                 return_file.write((char*) &buf, 8);
                         } else { //floating point types
-                                uint32_t* buf = get_fp_register(ret_regs[i], context);
-                                for(int j = 0; j < 4; j++) return_file.write((char*) &buf[j], 4);
+                                fprintf(stderr, "fp type (%d)\n", i);
+                                double buf;
+                                double* bufp = &buf;
+                                if(i == 2) {
+                                        asm("mov %%xmm0, (%0)" : : "r"(bufp) : );
+                                        fprintf(stderr, "read %lf from xmm0\n", buf);
+                                }
+                                if(i == 3) {
+                                        asm("mov %%xmm1, (%0)" : : "r"(bufp) : );
+                                        fprintf(stderr, "read %lf from xmm0\n", buf);
+                                }
+                                return_file.write((char*) &buf, sizeof(double));
+                                
                         }
                 }
         }
@@ -190,7 +217,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         //logging writes
         fprintf(stderr, "mem_writing = %p\n", (void*)mem_writing);
         if (mem_writing != 0) {
-                mimic_writes(mem_writing);
+                mimic_writes_analyzer(mem_writing);
                 mem_writing = 0;
         }
 
@@ -209,6 +236,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         //Faking the %rbp stack push to account for the 0xCC byte overwrite
                         stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
                         uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
+
+                        fprintf(stderr, "stack_base: %p, rdi: %p\n", (void*)stack_base, (void*)context->uc_mcontext.gregs[REG_RDI]);
 
                         //needs further explanation 
                         stack_base--;
@@ -253,8 +282,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                                 context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
                         }
 
-                        single_step(func_address); 
-
+                        single_step(func_address);
+                        
                         non_regular_start = false; 
                         run = 0;
                         call_count = 0;
@@ -346,13 +375,14 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 }
 
 //what happens to 3-operand instructions? 
-void mimic_writes(uint64_t dest_address) {
+void mimic_writes_analyzer(uint64_t dest_address) {
         write_count++;
-        fprintf(stderr, "writing to address: %p\n",(void*) dest_address);
         size_t size = sizeof(uint64_t); 
         //log destination of the write
 
-        uint64_t val = *((uint64_t*)dest_address); 
+        uint64_t val = *((uint64_t*)dest_address);
+        
+        fprintf(stderr, "writing to %lu address: %p\n",val, (void*) dest_address);
         
         write_file.write((char*) &dest_address, sizeof(dest_address));
         write_file.write((char*) &val, size);
@@ -391,11 +421,11 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
         switch(obj) {
         case UD_R_RIP:
                 return context->uc_mcontext.gregs[REG_RIP];
-        case UD_R_RAX:
+        case UD_R_RAX: case UD_R_EAX: case UD_R_AX: case UD_R_AL: case UD_R_AH:
                 return context->uc_mcontext.gregs[REG_RAX];
-        case UD_R_RCX:
+        case UD_R_RCX: 
                 return context->uc_mcontext.gregs[REG_RCX];
-        case UD_R_RDX:
+        case UD_R_RDX: case UD_R_EDX: case UD_R_DX: case UD_R_DL: case UD_R_DH:
                 return context->uc_mcontext.gregs[REG_RDX];
         case UD_R_RBX:
                 return context->uc_mcontext.gregs[REG_RBX];
@@ -423,32 +453,51 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
                 return context->uc_mcontext.gregs[REG_R14];
         case UD_R_R15:
                 return context->uc_mcontext.gregs[REG_R15];
-        case UD_R_EAX:
-                return context->uc_mcontext.gregs[REG_EAX];
-        case UD_R_AX:
-                return context->uc_mcontext.gregs[REG_AX];
-        case UD_R_AL:
-                return context->uc_mcontext.gregs[REG_AL];
-        case UD_R_AH:
-                return context->uc_mcontext.gregs[REG_AH];
-         case UD_R_DX:
-                return context->uc_mcontext.gregs[REG_DX];
-        case UD_R_DL:
-                return context->uc_mcontext.gregs[REG_DL];
-        case UD_R_DH:
-                return context->uc_mcontext.gregs[REG_DH];             
-                            
         case UD_NONE:
                 return 0;
         default:
-                fprintf(stderr, "32, 16 and 8bit registers are not supported yet\n");
-                return 0; 
+                fprintf(stderr, "unsupported register\n");
+                return -1; 
         }
 }
 
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context) {
         switch(obj) {
-        default: return context->uc_mcontext.fpregs->_xmm[0].element;
+        case UD_R_XMM0:
+                return context->uc_mcontext.fpregs->_xmm[0].element;
+        case UD_R_XMM1:
+                return context->uc_mcontext.fpregs->_xmm[1].element;
+        case UD_R_XMM2:
+                return context->uc_mcontext.fpregs->_xmm[2].element;
+        case UD_R_XMM3:
+                return context->uc_mcontext.fpregs->_xmm[3].element;
+        case UD_R_XMM4:
+                return context->uc_mcontext.fpregs->_xmm[4].element;
+        case UD_R_XMM5:
+                return context->uc_mcontext.fpregs->_xmm[5].element;
+        case UD_R_XMM6:
+                return context->uc_mcontext.fpregs->_xmm[6].element;
+        case UD_R_XMM7:
+                return context->uc_mcontext.fpregs->_xmm[7].element;
+        case UD_R_XMM8:
+                return context->uc_mcontext.fpregs->_xmm[8].element;
+        case UD_R_XMM9:
+                return context->uc_mcontext.fpregs->_xmm[9].element;
+        case UD_R_XMM10:
+                return context->uc_mcontext.fpregs->_xmm[10].element;
+        case UD_R_XMM11:
+                return context->uc_mcontext.fpregs->_xmm[11].element;
+        case UD_R_XMM12:
+                return context->uc_mcontext.fpregs->_xmm[12].element;
+        case UD_R_XMM13:
+                return context->uc_mcontext.fpregs->_xmm[13].element;
+        case UD_R_XMM14:
+                return context->uc_mcontext.fpregs->_xmm[14].element;
+        case UD_R_XMM15:
+                return context->uc_mcontext.fpregs->_xmm[15].element;    
+        default:
+                fprintf(stderr, "unsupported register\n");
+                return NULL; 
         }
 }
 
@@ -477,77 +526,4 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
         bt[0] = (void*) ((ucontext_t*) context)->uc_mcontext.gregs[REG_RIP];
 
         backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
-}
-
-/**
- * Fake main that intercepts the main of a program running the analyzer tool
- * takes in the arguments passed on running 
- */
-static int wrapped_main(int argc, char** argv, char** env) {
-        fprintf(stderr, "Entered main wrapper\n");
-        
-        //storing the func_name searched for as the last argument
-        string func_name = argv[argc-1];  
-        argv[argc-1] = NULL;
-        argc -= 1;
-
-        func_address = find_address("/proc/self/exe", func_name);
-
-        //set up for the SIGTRAP signal handler
-        struct sigaction sig_action, debugger;
-        memset(&sig_action, 0, sizeof(sig_action));
-        sig_action.sa_sigaction = trap_handler;
-        sigemptyset(&sig_action.sa_mask);
-        sig_action.sa_flags = SA_SIGINFO;
-        sigaction(SIGTRAP, &sig_action, 0);
-   
-        //for the debugger
-        memset(&debugger, 0, sizeof(debugger));
-        debugger.sa_sigaction = seg_handler;
-        sigemptyset(&debugger.sa_mask);
-        debugger.sa_flags = SA_SIGINFO;
-        sigaction(SIGSEGV, &debugger, 0);
-
-        write_count = 0;
-        single_step(func_address);
-
-        return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
-        write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
-                
-        map<string, uint64_t> start_readings = measure_energy();
-        
-        og_main(argc, argv, env);
-
-        map<string, uint64_t> end_readings = measure_energy();
-
-        printf("Energy consumption (%lu):\n", end_readings.size());
-        for(auto &ent : end_readings) {
-                printf("%s: %lu\n", ent.first.c_str(), ent.second - start_readings.at(ent.first));
-        }
-
-        return_file.close();
-        write_file.close();
-
-        //switch back to old permissions
-        
-        return 0; 
-}
-
-/**
- * Intercepts __libc_start_main call to override main of the program calling the analyzer tool
- * Code retrieved from https://github.com/plasma-umass/coz/blob/master/libcoz/libcoz.cpp
- *                 and https://github.com/ccurtsinger/interpose
- */
-extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void (*init)(),
-                void (*fini)(), void (*rtld_fini)(), void* stack_end) {
-
-        //Find original __libc_start_main
-        
-        auto og_libc_start_main = (decltype(__libc_start_main)*)dlsym(RTLD_NEXT, "__libc_start_main");
-
-        //Save original main function
-        og_main = main_fn;
-
-        //Running original __libc_start_main with wrapped main
-        return og_libc_start_main(wrapped_main, argc, argv, init, fini, rtld_fini, stack_end); 
 }

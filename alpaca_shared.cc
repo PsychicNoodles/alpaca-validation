@@ -1,6 +1,70 @@
 #include "alpaca_shared.hh"
 
+#include "alpaca_no2.hh"
+#include "alpaca_fn_disabler.hh"
+
 uint64_t offset;
+
+uint64_t func_address; //the address of the target function
+
+fstream return_file;
+fstream write_file;
+
+typedef int (*main_fn_t)(int, char**, char**);
+main_fn_t og_main;
+
+static int wrapped_main(int argc, char** argv, char** env) {
+        cerr << "Entered main wrapper\n";
+        
+        //storing the func_name searched for as the last argument
+        string func_name = argv[argc-2];  
+        argv[argc-2] = NULL;
+
+        func_address = find_address("/proc/self/exe", func_name);
+        
+        if (strcmp(argv[argc-1], "analyze") == 0) {
+                return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
+                write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
+                
+                //set up for the SIGTRAP signal handler
+                struct sigaction sig_action, debugger;
+                memset(&sig_action, 0, sizeof(sig_action));
+                sig_action.sa_sigaction = trap_handler;
+                sigemptyset(&sig_action.sa_mask);
+                sig_action.sa_flags = SA_SIGINFO;
+                sigaction(SIGTRAP, &sig_action, 0);
+
+                single_step(func_address);
+                
+        } else if (strcmp(argv[argc-1], "disable") == 0) {
+                return_file.open("return-logger", fstream::in | fstream::binary);
+                write_file.open("write-logger", fstream::in | fstream::binary);
+                
+                read_writes();
+                read_returns();
+                
+        } else {
+                cerr << "Unknown mode!\n";
+                exit(2);
+        }
+
+        argc -= 2;
+
+        map<string, uint64_t> start_readings = measure_energy();
+        og_main(argc, argv, env);
+        map<string, uint64_t> end_readings = measure_energy();
+
+        cerr << "Energy consumption (%lu):" << end_readings.size() << endl;
+        for(auto &ent : end_readings) {
+                cerr << ent.first << ": " << ent.second - start_readings.at(ent.first) << endl;
+        }
+
+        return_file.close();
+        write_file.close();
+
+        return 0; 
+        
+}
 
 void shut_down() {
         //to be implemented
@@ -67,17 +131,6 @@ uint64_t find_address(const char* file_path, string func_name) {
         //potential problem with multiple entries in the table for the same function? 
 }
 
-ReturnMode parse_argv(int argc, char** argv) {
-        string mode = string(argv[argc-2]);
-        if(mode == "float") return FLOAT;
-        else if(mode == "struct") return LARGE;
-        else if(mode == "int") return INT;
-        else {
-                fprintf(stderr, "Invalid return type mode %s\n", mode.c_str());
-                exit(3);
-        }
-}
-
 string file_readline(string path) {
         ifstream in(path);
         string str;
@@ -134,4 +187,22 @@ INTERPOSE (_exit)(int rc) {
 INTERPOSE (_Exit)(int rc) {
         shut_down();
         real::_Exit(rc); 
+}
+
+/**
+ * Intercepts __libc_start_main call to override main of the program calling the analyzer tool
+ * Code retrieved from https://github.com/plasma-umass/coz/blob/master/libcoz/libcoz.cpp
+ *                 and https://github.com/ccurtsinger/interpose
+ */
+extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void (*init)(),
+                void (*fini)(), void (*rtld_fini)(), void* stack_end) {
+
+        //Find original __libc_start_main
+        auto og_libc_start_main = (decltype(__libc_start_main)*)dlsym(RTLD_NEXT, "__libc_start_main");
+
+        //Save original main function
+        og_main = main_fn;
+
+        //Running original __libc_start_main with wrapped main
+        return og_libc_start_main(wrapped_main, argc, argv, init, fini, rtld_fini, stack_end); 
 }

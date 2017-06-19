@@ -1,3 +1,10 @@
+#if !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
+#ifndef ALPACA_SHARED
+#define ALPACA_SHARED
+
 #include "elf++.hh"
 #include "interpose.hh" //interposing exit functions
 
@@ -12,6 +19,7 @@
 #include <string>
 #include <map>
 #include <fstream>
+#include <iostream>
 
 #define ENERGY_ROOT "/sys/class/powercap/intel-rapl/"
 #define ENERGY_NAME "name"
@@ -20,11 +28,11 @@
 
 using namespace std;
 
-enum ReturnMode{
-        INT,
-        FLOAT,
-        LARGE
-};
+extern uint64_t func_address; //the address of the target function
+
+extern fstream return_file;
+extern fstream write_file;
+
 
 /**
  * Locates the address of the target function
@@ -33,6 +41,6 @@ enum ReturnMode{
  */
 uint64_t find_address(const char* file_path, string func_name);
 
-ReturnMode parse_argv(int argc, char** argv);
-
 map<string, uint64_t> measure_energy();
+
+#endif
