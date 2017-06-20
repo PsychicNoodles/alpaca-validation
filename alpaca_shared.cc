@@ -19,23 +19,33 @@ static int wrapped_main(int argc, char** argv, char** env) {
         //storing the func_name searched for as the last argument
         string func_name = argv[argc-2];  
         argv[argc-2] = NULL;
+        cerr << "func_name: " << func_name << "\n";
 
         func_address = find_address("/proc/self/exe", func_name);
+
+        for(int i=0; i<argc; i++) {
+                cerr << i << ": " << argv[i] << "\n";
+        }
+
         
         if (strcmp(argv[argc-1], "analyze") == 0) {
                 return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
                 write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
-                
+     
+                //
                 //set up for the SIGTRAP signal handler
-                struct sigaction sig_action, debugger;
-                memset(&sig_action, 0, sizeof(sig_action));
-                sig_action.sa_sigaction = trap_handler;
-                sigemptyset(&sig_action.sa_mask);
-                sig_action.sa_flags = SA_SIGINFO;
-                sigaction(SIGTRAP, &sig_action, 0);
-
-                single_step(func_address);
                 
+                struct sigaction sa = {
+                        .sa_sigaction = trap_handler,
+                        .sa_flags = SA_SIGINFO
+                };
+                sigaction(SIGTRAP, &sa, NULL);
+        
+                //     asm("int $3"); 
+                single_step(func_address);
+
+                
+
         } else if (strcmp(argv[argc-1], "disable") == 0) {
                 return_file.open("return-logger", fstream::in | fstream::binary);
                 write_file.open("write-logger", fstream::in | fstream::binary);
@@ -47,7 +57,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 cerr << "Unknown mode!\n";
                 exit(2);
         }
-
+         
         argc -= 2;
 
         map<string, uint64_t> start_readings = measure_energy();

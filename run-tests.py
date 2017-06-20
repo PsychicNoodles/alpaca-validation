@@ -16,8 +16,10 @@ else:
     pairs = zip(tests, results)
 
 for test, res in pairs:
+    print "running %s" % [TEST_PROG, test, test + "_func", "analyze"]
     sub = subprocess.Popen([TEST_PROG, test, test + "_func", "analyze"], stdout=PIPE, stderr=PIPE)
     sub.wait()
+    print "running %s" % [TEST_PROG, test, test + "_func", "disable"]
     disabler = subprocess.Popen([TEST_PROG, test, test + "_func", "disable"], stdout=PIPE, stderr=PIPE)
     disabler.wait()
     outdata = disabler.stdout.readline()

@@ -25,8 +25,8 @@ typedef struct {
         uint8_t flag;
         uint64_t rax;
         uint64_t rdx;
-        uint32_t xmm0[4];
-        uint32_t xmm1[4]; 
+        float xmm0[4];
+        float xmm1[4]; 
 } ret_t; 
 
 
@@ -99,23 +99,28 @@ void read_writes() {
 
 void read_returns() {
         while(!return_file.eof()) {
+                cerr << "return_file tellg: " << return_file.tellg() << "\n";
                 uint64_t wc;
                 return_file.read((char*) &wc, sizeof(uint64_t));
+                fprintf(stderr, "wc: %lu\n", wc);
                 write_count_queue.push(wc);
 
                 ret_t return_struct; 
                 return_file.read((char*) &return_struct.flag, 1);
+                fprintf(stderr, "flag is: %d\n", return_struct.flag);
 
                 if(return_struct.flag & 0b00000001) return_file.read((char*) &return_struct.rax, 8);
                 if(return_struct.flag & 0b00000010) return_file.read((char*) &return_struct.rdx, 8);
 
                 if(return_struct.flag & 0b00000100) {
-                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm0[i], 4);
-                        fprintf(stderr, "logging value: %lf\n", *((double*)return_struct.xmm0));
+                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm0[i], sizeof(float));
+                        fprintf(stderr, "xmm0: %.1f %.1f %.1f %.1f\n", return_struct.xmm0[0], return_struct.xmm0[1], return_struct.xmm0[2], return_struct.xmm0[3]);
                 }
 
                 if(return_struct.flag & 0b00001000) {
-                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm1[i], 4);
+                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm1[i], sizeof(float));
+
+                        fprintf(stderr, "xmm1: %.1f %.1f %.1f %.1f\n", return_struct.xmm1[0], return_struct.xmm1[1], return_struct.xmm1[2], return_struct.xmm1[3]);
                 }
 
                 returns.push(return_struct);

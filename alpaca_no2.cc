@@ -178,19 +178,9 @@ void log_returns(ucontext_t* context) {
                                 uint64_t buf = get_register(ret_regs[i], context);
                                 return_file.write((char*) &buf, 8);
                         } else { //floating point types
-                                fprintf(stderr, "fp type (%d)\n", i);
-                                double buf;
-                                double* bufp = &buf;
-                                if(i == 2) {
-                                        asm("mov %%xmm0, (%0)" : : "r"(bufp) : );
-                                        fprintf(stderr, "read %lf from xmm0\n", buf);
-                                }
-                                if(i == 3) {
-                                        asm("mov %%xmm1, (%0)" : : "r"(bufp) : );
-                                        fprintf(stderr, "read %lf from xmm0\n", buf);
-                                }
-                                return_file.write((char*) &buf, sizeof(double));
-                                
+                                float* f = (float*)get_fp_register(ret_regs[i], context);
+                                return_file.write((char*) &f, sizeof(float) * 4);
+                                fprintf(stderr, "write f: %.1f %.1f %.1f %.1f\n", f[0], f[1], f[2], f[3]);
                         }
                 }
         }
@@ -214,6 +204,16 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 exit(2);
         }
 
+        ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+        
+        for (int i = 0; i < 16; i++) {
+                float* f = (float*)&context->uc_mcontext.fpregs->_xmm[i];
+                fprintf(stderr, "value in xmm[%d] is %.1f %.1f %.1f %.1f\n", i, f[0], f[1], f[2], f[3]);
+                //double* d = (double*)&context->uc_mcontext.fpregs->_xmm[i];
+                //fprintf(stderr, "value in xmm[%d] is %.1f %.1f\n", i, d[0], d[1]);
+        }
+
+        
         //logging writes
         fprintf(stderr, "mem_writing = %p\n", (void*)mem_writing);
         if (mem_writing != 0) {
@@ -227,12 +227,12 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
         static int call_count = 0;
         static ud_t ud_obj;
         static bool non_regular_start = false; 
-
-        ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
-
+        
         if (func_start_byte == 0x55) {
                 fprintf(stderr, "func_start_byte is 0x55\n");
+        
                 if (!run) {
+
                         //Faking the %rbp stack push to account for the 0xCC byte overwrite
                         stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
                         uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
@@ -260,6 +260,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 initialize_ud(&ud_obj);
         }
 
+                
         //grabs next instruction to disassemble 
         ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
         ud_disassemble(&ud_obj);
@@ -275,6 +276,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         //keep track of writing number
                         fprintf(stderr, "write_count: %lu\n", write_count);
 
+                        float* f = (float*)&context->uc_mcontext.fpregs->_xmm[0];
+                        fprintf(stderr, "double checking xmm0: %.1f %.1f %.1f %.1f\n", f[0], f[1], f[2], f[3]);
                         log_returns(context);
                         
                         if (!non_regular_start) {
@@ -295,7 +298,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 }
         }
 
-        fprintf(stderr, "assembly instruction: %s\n", ud_insn_asm(&ud_obj));
+        fprintf(stderr, "assembly instruction: %s (cc: %d)\n", ud_insn_asm(&ud_obj), call_count);
 
         switch (ud_insn_mnemonic(&ud_obj)) {
         case UD_Iret: case UD_Iretf:
@@ -308,7 +311,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 call_count++;
                 break;
 
-                //readonly 1 operand instructions
+                        //readonly 1 operand instructions
         case UD_Iclflush: case UD_Iclts: case UD_Iffree: case UD_Iffreep:
         case UD_Ifld1: case UD_Ifldcw: case UD_Ifldenv: case UD_Ifldl2e:
         case UD_Ifldl2t: case UD_Ifldlg2: case UD_Ifldln2: case UD_Ifldz:
@@ -345,8 +348,9 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 //readonly 3 operand instructions
         case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw:
                 break; 
-
+                
         default:
+                
                 fprintf(stderr, "unknown operation, testing all operands\n");
                 ud_operand_t* op;
                 int i = 0;
@@ -362,6 +366,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
                 test_operand(&ud_obj, 0, context); 
                 break;
+                
         }
 
         if (non_regular_start) {
