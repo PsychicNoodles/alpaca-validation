@@ -91,6 +91,11 @@ float float_func() {
         return ret;
 }
 
+float param_float_func(float a) {
+        float ret = 6.0 + a;
+        return ret;
+}
+
 double double_func() {
         double ret = 7.0;
         return ret;
@@ -249,6 +254,11 @@ int main(int argc, char** argv) {
                 global_b = 0;
                 global_write_func();
                 printf("%d %.1lf %s", global_a, global_b, global_c);
+        }
+        if(cmp(argv[1], "param_float")) {
+                float a = 3.3;
+                float b = param_float_func(a);
+                printf("%.1lf", b);
         }
         if(cmp(argv[1], "local")) {
                 int ret = 1;
