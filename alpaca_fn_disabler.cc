@@ -86,7 +86,8 @@ void mimic_writes_disabler(uint64_t write_count) {
 //first log memory address
 //second log value at the mem address (both uint64_t)
 void read_writes() {
-        while (!write_file.eof()) {
+        uint64_t buf;
+        while (write_file.read((char*) &buf, sizeof(uint64_t))) {
                 uint64_t buffer; 
                 write_file.read((char*) &buffer, sizeof(uint64_t)); 
                 writes.push(buffer);
@@ -98,12 +99,11 @@ void read_writes() {
 //second log return struct
 
 void read_returns() {
-        while(!return_file.eof()) {
+        uint64_t buf;
+        while(return_file.read((char*) &buf, sizeof(uint64_t))) {
                 cerr << "return_file tellg: " << return_file.tellg() << "\n";
-                uint64_t wc;
-                return_file.read((char*) &wc, sizeof(uint64_t));
-                fprintf(stderr, "wc: %lu\n", wc);
-                write_count_queue.push(wc);
+                fprintf(stderr, "wc: %lu\n", buf);
+                write_count_queue.push(buf);
 
                 ret_t return_struct; 
                 return_file.read((char*) &return_struct.flag, 1);

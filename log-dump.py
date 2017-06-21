@@ -26,6 +26,10 @@ try:
                     print "rax: %s" % struct.unpack("Q", return_log.read(8))
                 if flag & 0b10:
                     print "rdx: %s" % struct.unpack("Q", return_log.read(8))
+                if flag & 0b100:
+                    print "xmm0: %f %f %f %f" % struct.unpack("ffff", return_log.read(16))
+                if flag & 0b1000:
+                    print "xmm1: %f %f %f %f" % struct.unpack("ffff", return_log.read(16))
                 finished_line = True
 except struct.error: 
     if finished_line:

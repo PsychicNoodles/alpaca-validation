@@ -179,7 +179,7 @@ void log_returns(ucontext_t* context) {
                                 return_file.write((char*) &buf, 8);
                         } else { //floating point types
                                 float* f = (float*)get_fp_register(ret_regs[i], context);
-                                return_file.write((char*) &f, sizeof(float) * 4);
+                                for(int n = 0; n < 4; n++) return_file.write((char*) &f[n], sizeof(float));
                                 fprintf(stderr, "write f: %.1f %.1f %.1f %.1f\n", f[0], f[1], f[2], f[3]);
                         }
                 }
