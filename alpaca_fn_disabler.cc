@@ -74,15 +74,10 @@ void disabled_fn() {
 void mimic_writes_disabler(uint64_t write_count) {
         fprintf(stderr, "mimicing writes with count %lu\n", write_count);
         for(int i = 0; i < write_count; i++){
-                fprintf(stderr, "entered loop with i: %d\n", i);
                 uint64_t* memory_dest = (uint64_t*) writes.front();
-                fprintf(stderr, "read destination: %p\n", (void*)memory_dest);
                 writes.pop();
-                fprintf(stderr, "popped\n");
                 uint64_t val = writes.front();
-                fprintf(stderr, "gotten value %lu\n", val);
                 writes.pop();
-                fprintf(stderr, "popped\n");
                 *memory_dest = val;
                 fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
         }
