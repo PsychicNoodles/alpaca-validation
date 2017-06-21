@@ -55,14 +55,15 @@ void disabled_fn() {
                 exit(5);
         }
 
-        if(curr_return.flag & 0b00001000) fprintf(stderr, "xmm1: %lf\n", *((double*) curr_return.xmm1));
-        if(curr_return.flag & 0b00000100) fprintf(stderr, "xmm0: %lf\n", *((double*) curr_return.xmm0));
-        
+        if(curr_return.flag & 0b00001000) fprintf(stderr, "xmm1: %lf %lf %lf %lf\n", curr_return.xmm1[0], curr_return.xmm1[1],  curr_return.xmm1[2],  curr_return.xmm1[3]);
+        if(curr_return.flag & 0b00000100) fprintf(stderr, "xmm0: %lf %lf %lf %lf\n", curr_return.xmm0[0], curr_return.xmm0[1],  curr_return.xmm0[2],  curr_return.xmm0[3]);
+
+                
         if(curr_return.flag & 0b00000010) fprintf(stderr, "rdx: %lu\n", curr_return.rdx);
         if(curr_return.flag & 0b00000001) fprintf(stderr, "rax: %lu\n", curr_return.rax);
  
-        if(curr_return.flag & 0b00001000) asm("mov %0, %%xmm1" : : "r"(curr_return.xmm1) : );
-        if(curr_return.flag & 0b00000100) asm("mov %0, %%xmm0" : : "r"(curr_return.xmm0) : );
+        if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
+        if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
         
         if(curr_return.flag & 0b00000010) asm("" : : "d"(curr_return.rdx) : );
         //other registers and if statements (comparison) use rax to store their values so it should come last 
