@@ -41,12 +41,16 @@ uint64_t write_count;
 
 uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
 
-
 queue<uint64_t> rets; //return values for the disabler function
 ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
 ud_type_t rax_regs[5] = {UD_R_RAX, UD_R_EAX, UD_R_AX, UD_R_AH, UD_R_AL};
 ud_type_t rdx_regs[5] = {UD_R_RDX, UD_R_EDX, UD_R_DX, UD_R_DH, UD_R_DL};
 bool ret_regs_touched[NUM_RET_REGS] = {false};
+
+uint64_t syscall_params = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_R_R8, UD_R_R9};
+bool sys_pre = false;
+uin64_t sys_pre_count;
+uin64_t sys_post_count; 
 
 //function declarations
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
@@ -56,7 +60,8 @@ bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
 void mimic_writes_analyzer(uint64_t dest_address);
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
-
+void log_syscall(uint64_t sys_num, ucontext_t* context);
+void log_sys_ret(uint64_t ret_value_reg);
 
 /**
  * Enables single-stepping (instruction by instruction) through the function
@@ -159,10 +164,15 @@ void initialize_ud(ud_t* ud_obj) {
 
 void log_returns(ucontext_t* context) {
 
-        uint64_t wc = write_count;
-        fprintf(stderr, "writing write count %lu\n", wc);
-        return_file.write((char*) &wc, sizeof(uint64_t));
+        fprintf(stderr, "number of syscalls pre-writes: %d\n", sys_pre_count);
+        return_file.write((char*) &sys_pre_count; sizeof(uint64_t));
 
+        fprintf(stderr, "writing write count %lu\n", write_count);
+        return_file.write((char*) &write_count, sizeof(uint64_t));
+
+        fprintf(stderr, "number of syscalls post-writes: %d\n", sys_post_count);
+        return_file.write((char*) &sys_post_count; sizeof(uint64_t));
+        
         uint8_t flag = 0; 
         //which/how many registers we're writing to
         for (int i = 0; i < NUM_RET_REGS; i++) {
@@ -194,6 +204,8 @@ void log_returns(ucontext_t* context) {
                         }
                 }
         }
+
+        
 }
 
 
@@ -288,6 +300,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                         run = 0;
                         call_count = 0;
                         write_count = 0;
+                        sys_pre_count = 0;
+                        sys_post_count = 0; 
 
                         memset(ret_regs_touched, false, NUM_RET_REGS*sizeof(bool)); 
 
@@ -344,8 +358,15 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
                 break;
                 //readonly 3 operand instructions
         case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw:
+                break;
+                //syscall calls
+        case UD_Isyscall: case UD_Isysenter: 
+                log_syscall(context->uc_mcontext.gregs[REG_RAX], context);
+                break;
+                //maybe unnecessary: keeping track of returns for syscall to ensure corectness  
+        case UD_Isysret: case UD_Isysexit: 
+                log_sys_ret(context->uc_mcontext.gregs[REG_RAX]);
                 break; 
-
         default:
                 fprintf(stderr, "unknown operation, testing all operands\n");
                 ud_operand_t* op;
@@ -387,6 +408,39 @@ void mimic_writes_analyzer(uint64_t dest_address) {
         write_file.write((char*) &dest_address, sizeof(dest_address));
         write_file.write((char*) &val, size);
 }
+
+//logging syscalls: uint64_t syscall num, uint64_t[] syscall params, syscall return check
+// log num of syscalls for pre and post in the return file 
+void log_syscall(uint64_t sys_num, ucontext_t* context) {
+  syscall_t syscall = get_syscall(sys_num);
+  string syscall_name = syscall.name;
+  int num_params = syscall.args;
+ 
+  if (syscall.pre) {
+    sys_pre_count++; 
+    sys_pre = true; 
+    sys_file_pre.write((char*) &sys_num, sizeof(uint64_t));
+    
+    for (int i = 0; i < num_params; i++)
+      sys_file_pre.write((char*)) &get_register(syscall_params[i], context), sizeof(uint64_t));
+  else {
+    sys_post_count++; 
+    sys_file_post.write((char*) &sys_num, sizeof(uint64_t));
+    
+    for (int i = 0; i < num_params; i++)
+      sys_file_post.write((char*)) &get_register(syscall_params[i], context), sizeof(uint64_t));
+
+  }
+}
+
+void log_sys_ret(uint64_t ret_value_reg) {
+  if (sys_pre) {
+    sys_file_pre.write((char*) &ret_value_reg, sizeof(uint64_t));
+    sys_pre = false; 
+  } else
+    sys_file_post.write((char*) &ret_value_reg, sizeof(uint64_t));
+}
+
 /**
  * Checks if the next instruction will only read or also write to memory
  * ud_t* obj: pointer to the object that disassembles the next instruction 
@@ -527,3 +581,4 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 
         backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
 }
+
