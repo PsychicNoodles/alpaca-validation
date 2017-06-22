@@ -9,6 +9,8 @@ uint64_t func_address; //the address of the target function
 
 fstream return_file;
 fstream write_file;
+fstream sys_file_pre;
+fstream sys_file_post;
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
@@ -25,6 +27,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
         if (strcmp(argv[argc-1], "analyze") == 0) {
                 return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
                 write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
+                sys_file.open("sys-logger", fstream::out | fstream::trunc | fstream::binary);
                 
                 //set up for the SIGTRAP signal handler
                 struct sigaction sig_action, debugger;
