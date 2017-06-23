@@ -17,10 +17,9 @@ else:
 
 for test, res in pairs:
     sub = subprocess.Popen([TEST_PROG, test, test + "_func", "analyze"], stdout=PIPE, stderr=PIPE)
-    sub.wait()
+    sub.communicate()
     disabler = subprocess.Popen([TEST_PROG, test, test + "_func", "disable"], stdout=PIPE, stderr=PIPE)
-    disabler.wait()
-    outdata = disabler.stdout.readline()
+    outdata, errdata = disabler.communicate()
     if outdata == res:
         print "%s test was successful" % test
     else:

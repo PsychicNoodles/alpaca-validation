@@ -323,7 +323,7 @@ extern uint64_t func_address; //the address of the target function
 
 extern fstream return_file;
 extern fstream write_file;
-
+extern fstream sys_file;
 
 /**
  * Locates the address of the target function

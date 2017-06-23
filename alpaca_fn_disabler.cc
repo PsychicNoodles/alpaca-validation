@@ -4,6 +4,7 @@
 #include "x86jump.h"
 
 #include <arpa/inet.h>
+#include <bitset>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -25,115 +26,123 @@ typedef struct {
   uint8_t flag;
   uint64_t rax;
   uint64_t rdx;
-  uint32_t xmm0[4];
-  uint32_t xmm1[4]; 
+  float xmm0[4];
+  float xmm1[4]; 
 } ret_t; 
 
 
 queue<ret_t> returns;
-queue<syscall_t> sys_pre;
-queue<syscall_t> sys_post;
-queue<uint64_t> syspre_count_queue;
-queue<uint64_t> syspost_count_queue; 
-
-
-queue<uint64_t> write_count_queue; 
+queue<uint64_t> write_syscall_counts;
+queue<bool> flags;
+queue<uint64_t> syses;
 queue<uint64_t> writes; //returning from write-logger
 
-void mimic_writes_disabler(uint64_t write_count);
+void mimic_write();
+bool mimic_syscall();
 
 void disabled_fn() {
   fprintf(stderr, "disabled_fn\n");
 
-  uint64_t sys_pre_count = syspre_count_queue.front();
-  syspre_count_queue.pop();
-  if(sys_pre_count !=0) mimic_sys_pre(sys_pre_count);
-
-  uint64_t wc = write_count_queue.front();
-  write_count_queue.pop();
-  if (wc != 0) mimic_writes_disabler(wc);
-
-  
-  uint64_t sys_post_count = syspost_count_queue.front();
-  syspost_count_queue.pop();
-  if(sys_post_count !=0) mimic_sys_pre(sys_pre_count);
+  uint64_t count = write_syscall_counts.front();
+  write_syscall_counts.pop();
+  fprintf(stderr, "write/syscall count %lu\n", count);
+  for(int i = 0; i < count; i++) {
+    fprintf(stderr, "flag pop: %d\n", flags.front() ? 1 : 0);
+    if(flags.front()) {
+      fprintf(stderr, "mimicing write\n");
+      mimic_write();
+    } else {
+      if (!mimic_syscall()) {
+        fprintf(stderr, "syscall mimicing failed!\n");
+        exit(2);
+      }
+    }
+    flags.pop();
+  }
 
   ret_t curr_return = returns.front();
   returns.pop();
 
   fprintf(stderr, "flag: %d\n", curr_return.flag);
 
-  if(curr_return.flag & 0b11110000) {
-    fprintf(stderr, "only rax and rdx supported (%d)\n", curr_return.flag);
-    exit(5);
-  }
-
-  if(curr_return.flag & 0b00001000) fprintf(stderr, "xmm1: %lf\n", *((double*) curr_return.xmm1));
-  if(curr_return.flag & 0b00000100) fprintf(stderr, "xmm0: %lf\n", *((double*) curr_return.xmm0));
+  if(curr_return.flag & 0b00001000) fprintf(stderr, "xmm1: %.1f %.1f %.1f %.1f\n", curr_return.xmm1[0], curr_return.xmm1[1], curr_return.xmm1[2], curr_return.xmm1[3]);
+  if(curr_return.flag & 0b00000100) fprintf(stderr, "xmm0: %.1f %.1f %.1f %.1f\n", curr_return.xmm0[0], curr_return.xmm0[1], curr_return.xmm0[2], curr_return.xmm0[3]);
         
   if(curr_return.flag & 0b00000010) fprintf(stderr, "rdx: %lu\n", curr_return.rdx);
   if(curr_return.flag & 0b00000001) fprintf(stderr, "rax: %lu\n", curr_return.rax);
- 
-  if(curr_return.flag & 0b00001000) asm("mov %0, %%xmm1" : : "r"(curr_return.xmm1) : );
-  if(curr_return.flag & 0b00000100) asm("mov %0, %%xmm0" : : "r"(curr_return.xmm0) : );
-        
+
+  fprintf(stderr, "assembling\n");
+  if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
+  fprintf(stderr, "xmm1 assembled\n");
+  
+  if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
+  fprintf(stderr, "xmm0 assembled\n");
+  
   if(curr_return.flag & 0b00000010) asm("" : : "d"(curr_return.rdx) : );
-  //other registers and if statements (comparison) use rax to store their values so it should come last 
+  //other registers and if statements (comparison) use rax to store their values so it should come last
+  fprintf(stderr, "rdx assembled\n");
+  
   if(curr_return.flag & 0b00000001) asm("" : : "a"(curr_return.rax) : );
+  fprintf(stderr, "rax assembled\n");   
 }
 
-
-void mimic_sys_pre(uint64_t sys_pre_count){
- fprintf(stderr, "mimicing sys_pre with count %lu\n",sys_pre_count);
- for(int i = 0; i < sys_pre_count; i++){
-   uint64_t sys_num = sys_pre.front();
+//returns true upon correctly mimicing a syscall
+bool mimic_syscall() {
+  uint64_t sys_num = syses.front();
+  syses.pop();
    
+  syscall_t syscall_struct = syscalls[sys_num];
+  int args_no = syscall_struct.args;
    
-
-
- }
-
-
-}
-
-void mimic_sys_post(uint64_t sys_post_count){
-
-
-
-}
-
-void mimic_writes_disabler(uint64_t write_count) {
-  fprintf(stderr, "mimicing writes with count %lu\n", write_count);
-  for(int i = 0; i < write_count; i++){
-    uint64_t* memory_dest = (uint64_t*) writes.front();
-    writes.pop();
-    uint64_t val = writes.front();
-    writes.pop();
-
-    *memory_dest = val;
-    fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
+  if (args_no > 0) {
+    asm("mov %0, %%rdi" : : "r"(syses.front()) : );
+    syses.pop();
+  } if (args_no > 1) {
+    asm("mov %0, %%rsi" : : "r"(syses.front()) : );
+    syses.pop();
+  } if (args_no > 2) {
+    asm("mov %0, %%rdx" : : "r"(syses.front()) : );
+    syses.pop();
+  } if (args_no > 3) {
+    asm("mov %0, %%r10" : : "r"(syses.front()) : );
+    syses.pop();
+  } if (args_no > 4) {
+    asm("mov %0, %%r8" : : "r"(syses.front()) : );
+    syses.pop();
+  } if (args_no > 5) {
+    asm("mov %0, %%r9" : : "r"(syses.front()) : );
+    syses.pop();
   }
+
+
+  uint64_t original_ret = syses.front();
+  syses.pop(); 
+
+  //calling
+  asm("mov %0, %%rax; syscall": : "r" (sys_num):);
+ 
+  uint64_t curr_ret;
+  asm("mov %%rax, %0": "=r" (curr_ret): :);
+  return original_ret == curr_ret; 
+ 
 }
 
+void mimic_write() {
+  uint64_t* memory_dest = (uint64_t*) writes.front();
+  writes.pop();
+  uint64_t val = writes.front();
+  writes.pop();
 
-
-void read_sys_pre(){
-   uint64_t buffer; 
-   while(sys_file_pre.read((char*) &buffer, sizeof(uint64_t))){
-    sys_file_pre.read((char*) &buffer, sizeof(uint64_t)); 
-    sys_pre.push(buffer);
-    fprintf(stderr, "logged sys_pre in disabler: %p\n", (void*)buffer);
-  }
+  *memory_dest = val;
+  fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
 }
 
-
-
-void read_sys_post(){
+void read_syscalls(){
    uint64_t buffer; 
-   while(sys_file_post.read((char*) &buffer, sizeof(uint64_t))){
-    sys_file_post.read((char*) &buffer, sizeof(uint64_t)); 
-    sys_post.push(buffer);
-    fprintf(stderr, "logged sys_post in disabler: %p\n", (void*)buffer);
+   while(sys_file.read((char*) &buffer, sizeof(uint64_t))){
+    sys_file.read((char*) &buffer, sizeof(uint64_t)); 
+    syses.push(buffer);
+    fprintf(stderr, "logged syscall in disabler: %p\n", (void*)buffer);
   }
 }
 
@@ -141,11 +150,13 @@ void read_sys_post(){
 //first log memory address
 //second log value at the mem address (both uint64_t)
 void read_writes() {
-  while (!write_file.eof()) {
-    uint64_t buffer; 
-    write_file.read((char*) &buffer, sizeof(uint64_t)); 
+  uint64_t buffer;
+  while (write_file.read((char*) &buffer, sizeof(uint64_t))) {
     writes.push(buffer);
-    fprintf(stderr, "logged writes in disabler: %p\n", (void*)buffer);
+    fprintf(stderr, "logged writes in disabler: %p (uint64_t %lu) ", (void*)buffer, buffer);
+    for(int i = 0; i < 2; i++) fprintf(stderr, "(uint32_t[%d] %u) ", i, ((uint32_t*)&buffer)[i]);
+    for(int i = 0; i < 8; i++) fprintf(stderr, "(uint8_t[%d] %u) ", i, ((uint8_t*)&buffer)[i]);
+    fprintf(stderr, "\n");
   }
 }
 
@@ -153,27 +164,38 @@ void read_writes() {
 //second log return struct
 
 void read_returns() {
-  while(!return_file.eof()) {
+  uint64_t write_sys_count;
+  while(return_file.read((char*) &write_sys_count, sizeof(uint64_t))) {
+    fprintf(stderr, "write_sys_count %lu\n", write_sys_count);
+    write_syscall_counts.push(write_sys_count); 
 
-    uint64_t sys_pre_count;
-    return_file.read((char*) &sys_pre_count, sizeof(uint64_t));
-    syspre_count_queue.push(&sys_pre_count);
-    
-    uint64_t wc;
-    return_file.read((char*) &wc, sizeof(uint64_t));
-    write_count_queue.push(wc);
+    fprintf(stderr, "reading write/syscall flag ");
+    for (int i = 0; i < (write_sys_count/8) + 1; i++) {
+      uint8_t buf;
+      return_file.read((char*) &buf, sizeof(uint8_t));
 
-    
-    uint64_t sys_post_count;
-    return_file.read((char*) &sys_post_count, sizeof(uint64_t));
-    syspost_count_queue.push(&sys_post_count);
+      bitset<8> byte(buf); 
+      for (int j = 0; j < 8; j++) {
+        flags.push(byte.test(j));
+        fprintf(stderr, "%d", byte.test(j) ? 1 : 0);
+      }
+      fprintf(stderr, " ");
+    }
+    fprintf(stderr, "\n");
     
 
     ret_t return_struct; 
     return_file.read((char*) &return_struct.flag, 1);
+    fprintf(stderr, "flag %hhu\n", return_struct.flag);
 
-    if(return_struct.flag & 0b00000001) return_file.read((char*) &return_struct.rax, 8);
-    if(return_struct.flag & 0b00000010) return_file.read((char*) &return_struct.rdx, 8);
+    if(return_struct.flag & 0b00000001) {
+      return_file.read((char*) &return_struct.rax, 8);
+      fprintf(stderr, "rax %lu\n", return_struct.rax);
+    }
+    if(return_struct.flag & 0b00000010) {
+      return_file.read((char*) &return_struct.rdx, 8);
+      fprintf(stderr, "rdx %lu\n", return_struct.rdx);
+    }
 
     if(return_struct.flag & 0b00000100) {
       for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm0[i], 4);

@@ -9,8 +9,7 @@ uint64_t func_address; //the address of the target function
 
 fstream return_file;
 fstream write_file;
-fstream sys_file_pre;
-fstream sys_file_post;
+fstream sys_file;
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
@@ -28,7 +27,6 @@ static int wrapped_main(int argc, char** argv, char** env) {
                 return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
                 write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
                 sys_file.open("sys-logger", fstream::out | fstream::trunc | fstream::binary);
-                
                 //set up for the SIGTRAP signal handler
                 struct sigaction sig_action, debugger;
                 memset(&sig_action, 0, sizeof(sig_action));
@@ -42,9 +40,11 @@ static int wrapped_main(int argc, char** argv, char** env) {
         } else if (strcmp(argv[argc-1], "disable") == 0) {
                 return_file.open("return-logger", fstream::in | fstream::binary);
                 write_file.open("write-logger", fstream::in | fstream::binary);
-                
+
+                read_syscalls();
                 read_writes();
                 read_returns();
+                
                 
         } else {
                 cerr << "Unknown mode!\n";
@@ -61,9 +61,10 @@ static int wrapped_main(int argc, char** argv, char** env) {
         for(auto &ent : end_readings) {
                 cerr << ent.first << ": " << ent.second - start_readings.at(ent.first) << endl;
         }
-
+        
         return_file.close();
         write_file.close();
+        sys_file.close();
 
         return 0; 
         
