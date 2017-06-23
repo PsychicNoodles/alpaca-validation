@@ -71,28 +71,24 @@ void disabled_fn() {
   if(curr_return.flag & 0b00000010) fprintf(stderr, "rdx: %lu\n", curr_return.rdx);
   if(curr_return.flag & 0b00000001) fprintf(stderr, "rax: %lu\n", curr_return.rax);
 
-  fprintf(stderr, "assembling\n");
   if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
-  fprintf(stderr, "xmm1 assembled\n");
   
   if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
-  fprintf(stderr, "xmm0 assembled\n");
   
   if(curr_return.flag & 0b00000010) asm("" : : "d"(curr_return.rdx) : );
   //other registers and if statements (comparison) use rax to store their values so it should come last
-  fprintf(stderr, "rdx assembled\n");
   
   if(curr_return.flag & 0b00000001) asm("" : : "a"(curr_return.rax) : );
-  fprintf(stderr, "rax assembled\n");   
 }
 
 //returns true upon correctly mimicing a syscall
 bool mimic_syscall() {
   uint64_t sys_num = syses.front();
   syses.pop();
-   
+
   syscall_t syscall_struct = syscalls[sys_num];
   int args_no = syscall_struct.args;
+  fprintf(stderr, "mimicing syscall %lu name %s num args %d\n", sys_num, syscall_struct.name.c_str(), args_no);
    
   if (args_no > 0) {
     asm("mov %0, %%rdi" : : "r"(syses.front()) : );
@@ -138,10 +134,15 @@ void mimic_write() {
 }
 
 void read_syscalls(){
-   uint64_t buffer; 
-   while(sys_file.read((char*) &buffer, sizeof(uint64_t))){
-    sys_file.read((char*) &buffer, sizeof(uint64_t)); 
+  fprintf(stderr, "reading syscalls\n");
+  uint64_t buffer; 
+  while(sys_file.read((char*) &buffer, sizeof(uint64_t))){
     syses.push(buffer);
+    uint64_t num_params = syscalls[buffer].args;
+    for (int i = 0; i < num_params; i++) {
+      sys_file.read((char*) &buffer, sizeof(uint64_t)); 
+      syses.push(buffer);
+    }
     fprintf(stderr, "logged syscall in disabler: %p\n", (void*)buffer);
   }
 }

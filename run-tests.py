@@ -4,8 +4,8 @@ import sys
 import os
 
 TEST_PROG = "test-suite"
-tests = ["bool", "short", "int", "long", "long_long", "float", "double", "int_struct", "double_struct", "two_int", "two_float", "mixed", "eight_int", "everything", "pointer", "triple_double", "global_write", "param_float", "local"]
-results = ["1", "2", "3", "4", "5", "6.0", "7.0", "8", "9.0", "10 11", "12.0 13.0", "14 15 16.0", "17 18 19 20 21 22 23 24", "1 24 25 26 27 28.0 29.0", "30 31.0 testtest", "32.0 33.0 34.0", "1 2.0 testtest", "9.3", "2"]
+tests = ["bool", "short", "int", "long", "long_long", "float", "double", "int_struct", "double_struct", "two_int", "two_float", "mixed", "eight_int", "everything", "pointer", "triple_double", "global_write", "param_float", "local", "mmap"]
+results = ["1", "2", "3", "4", "5", "6.0", "7.0", "8", "9.0", "10 11", "12.0 13.0", "14 15 16.0", "17 18 19 20 21 22 23 24", "1 24 25 26 27 28.0 29.0", "30 31.0 testtest", "32.0 33.0 34.0", "1 2.0 testtest", "9.3", "2", "1234"]
 
 os.environ["LD_PRELOAD"] = "./alpaca.so:libelf++.so:libudis86.so"
 

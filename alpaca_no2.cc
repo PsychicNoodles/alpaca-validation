@@ -232,13 +232,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     exit(2);
   }
 
-  //logging writes
-  fprintf(stderr, "mem_writing = %p\n", (void*)mem_writing);
-  if (mem_writing != 0) {
-    log_writes(mem_writing);
-    mem_writing = 0;
-  }
-
   //used to keep track of the stack manipulation 
   static int run = 0;
   static bool return_reached = false;
@@ -246,6 +239,14 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   static ud_t ud_obj;
   static bool non_regular_start = false; 
 
+
+  //logging writes
+  fprintf(stderr, "mem_writing = %p (cc %d)\n", (void*)mem_writing, call_count);
+  if (mem_writing != 0) {
+    log_writes(mem_writing);
+    mem_writing = 0;
+  }
+  
   ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
   if (func_start_byte == 0x55) {
@@ -417,6 +418,7 @@ void log_writes(uint64_t dest_address) {
 //logging syscalls: uint64_t syscall num, uint64_t[] syscall params, syscall return check
 // log num of syscalls for pre and post in the return file 
 void log_syscall(uint64_t sys_num, ucontext_t* context) {
+  fprintf(stderr, "logging syscall %lu\n", sys_num);
   write_syscall_flag[write_syscall_count++] = false;
   syscall_t syscall = syscalls[sys_num];
   string syscall_name = syscall.name;

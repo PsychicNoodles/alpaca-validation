@@ -15,63 +15,64 @@ typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 static int wrapped_main(int argc, char** argv, char** env) {
-        cerr << "Entered main wrapper\n";
+  cerr << "Entered main wrapper\n";
         
-        //storing the func_name searched for as the last argument
-        string func_name = argv[argc-2];  
-        argv[argc-2] = NULL;
+  //storing the func_name searched for as the last argument
+  string func_name = argv[argc-2];  
+  argv[argc-2] = NULL;
 
-        func_address = find_address("/proc/self/exe", func_name);
+  func_address = find_address("/proc/self/exe", func_name);
         
-        if (strcmp(argv[argc-1], "analyze") == 0) {
-                return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
-                write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
-                sys_file.open("sys-logger", fstream::out | fstream::trunc | fstream::binary);
-                //set up for the SIGTRAP signal handler
-                struct sigaction sig_action, debugger;
-                memset(&sig_action, 0, sizeof(sig_action));
-                sig_action.sa_sigaction = trap_handler;
-                sigemptyset(&sig_action.sa_mask);
-                sig_action.sa_flags = SA_SIGINFO;
-                sigaction(SIGTRAP, &sig_action, 0);
+  if (strcmp(argv[argc-1], "analyze") == 0) {
+    return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
+    write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
+    sys_file.open("sys-logger", fstream::out | fstream::trunc | fstream::binary);
+    //set up for the SIGTRAP signal handler
+    struct sigaction sig_action, debugger;
+    memset(&sig_action, 0, sizeof(sig_action));
+    sig_action.sa_sigaction = trap_handler;
+    sigemptyset(&sig_action.sa_mask);
+    sig_action.sa_flags = SA_SIGINFO;
+    sigaction(SIGTRAP, &sig_action, 0);
 
-                single_step(func_address);
+    single_step(func_address);
                 
-        } else if (strcmp(argv[argc-1], "disable") == 0) {
-                return_file.open("return-logger", fstream::in | fstream::binary);
-                write_file.open("write-logger", fstream::in | fstream::binary);
+  } else if (strcmp(argv[argc-1], "disable") == 0) {
+    return_file.open("return-logger", fstream::in | fstream::binary);
+    write_file.open("write-logger", fstream::in | fstream::binary);
+    sys_file.open("sys-logger", fstream::in | fstream::binary);
 
-                read_syscalls();
-                read_writes();
-                read_returns();
+    read_syscalls();
+    read_writes();
+    read_returns();
                 
                 
-        } else {
-                cerr << "Unknown mode!\n";
-                exit(2);
-        }
+  } else {
+    cerr << "Unknown mode!\n";
+    exit(2);
+  }
 
-        argc -= 2;
+  argc -= 2;
 
-        map<string, uint64_t> start_readings = measure_energy();
-        og_main(argc, argv, env);
-        map<string, uint64_t> end_readings = measure_energy();
+  map<string, uint64_t> start_readings = measure_energy();
+  og_main(argc, argv, env);
+  map<string, uint64_t> end_readings = measure_energy();
 
-        cerr << "Energy consumption (%lu):" << end_readings.size() << endl;
-        for(auto &ent : end_readings) {
-                cerr << ent.first << ": " << ent.second - start_readings.at(ent.first) << endl;
-        }
+  cerr << "Energy consumption (%lu):" << end_readings.size() << endl;
+  for(auto &ent : end_readings) {
+    cerr << ent.first << ": " << ent.second - start_readings.at(ent.first) << endl;
+  }
         
-        return_file.close();
-        write_file.close();
-        sys_file.close();
+  return_file.close();
+  write_file.close();
+  sys_file.close();
 
-        return 0; 
+  return 0; 
         
 }
 
 void shut_down() {
-        //to be implemented
+  //to be implemented
 }
 
 /**
@@ -83,114 +84,114 @@ void shut_down() {
  * @returns a non-zero value until there are no shared objects to be processed. 
  */
 static int callback(struct dl_phdr_info *info, size_t size, void *data) {
-        // or info->dlpi_name == "\0" if first run doesn't work ?
-        static int run = 0;
-        if (run) return 0;
+  // or info->dlpi_name == "\0" if first run doesn't work ?
+  static int run = 0;
+  if (run) return 0;
 
-        offset = info->dlpi_addr; 
-        run = 1;
-        return 0; 
+  offset = info->dlpi_addr; 
+  run = 1;
+  return 0; 
 }
 
 uint64_t find_address(const char* file_path, string func_name) {
-        dl_iterate_phdr(callback, NULL);
+  dl_iterate_phdr(callback, NULL);
         
-        uint64_t addr = 0;
+  uint64_t addr = 0;
 
-        int read_fd = open(file_path, O_RDONLY);
-        if (read_fd < 0) {
-                fprintf(stderr, "%s: %s\n", file_path, strerror(errno));
-                exit(2);
-        }
+  int read_fd = open(file_path, O_RDONLY);
+  if (read_fd < 0) {
+    fprintf(stderr, "%s: %s\n", file_path, strerror(errno));
+    exit(2);
+  }
 
-        elf::elf f(elf::create_mmap_loader(read_fd));
-        for (auto &sec : f.sections()) {
-                if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
+  elf::elf f(elf::create_mmap_loader(read_fd));
+  for (auto &sec : f.sections()) {
+    if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
 
               
-                fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
-                fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
-                                "Address", "Size", "Binding", "Index", "Name", "Type");
+    fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
+    fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
+            "Address", "Size", "Binding", "Index", "Name", "Type");
                 
 
-                for (auto sym : sec.as_symtab()) {
-                        auto &d = sym.get_data();
-                        if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
+    for (auto sym : sec.as_symtab()) {
+      auto &d = sym.get_data();
+      if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
 
                         
-                        //probably will end up writing to log_fd
-                        fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
-                                        offset + d.value, d.size,
-                                        to_string(d.binding()).c_str(),
-                                        to_string(d.shnxd).c_str(),
-                                        sym.get_name().c_str(),
-                                        to_string(d.type()).c_str());
+      //probably will end up writing to log_fd
+      fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
+              offset + d.value, d.size,
+              to_string(d.binding()).c_str(),
+              to_string(d.shnxd).c_str(),
+              sym.get_name().c_str(),
+              to_string(d.type()).c_str());
                         
 
-                        addr = offset + d.value; 
-                }
-        }
+      addr = offset + d.value; 
+    }
+  }
        
-        return addr;
-        //potential problem with multiple entries in the table for the same function? 
+  return addr;
+  //potential problem with multiple entries in the table for the same function? 
 }
 
 string file_readline(string path) {
-        ifstream in(path);
-        string str;
-        in >> str;
-        return str;
+  ifstream in(path);
+  string str;
+  in >> str;
+  return str;
 }
 
 vector<string> find_in_dir(string dir, string substr) {
-        vector<string> res;
-        DIR* dirp = opendir(dir.c_str());
-        struct dirent* dp;
-        while((dp = readdir(dirp)) != NULL) {
-                string path = string(dp->d_name);
-                if(path.find(substr) != string::npos) {
-                        res.push_back(path);
-                }
-        }
-        closedir(dirp);
-        return res;
+  vector<string> res;
+  DIR* dirp = opendir(dir.c_str());
+  struct dirent* dp;
+  while((dp = readdir(dirp)) != NULL) {
+    string path = string(dp->d_name);
+    if(path.find(substr) != string::npos) {
+      res.push_back(path);
+    }
+  }
+  closedir(dirp);
+  return res;
 }
 
 void push_energy_info(map<string, uint64_t>* readings, string dir) {
-        string name = file_readline(dir + ENERGY_NAME);
-        uint64_t energy;
-        istringstream(file_readline(dir + ENERGY_FILE)) >> energy;
-        readings->insert(make_pair(name, energy));
+  string name = file_readline(dir + ENERGY_NAME);
+  uint64_t energy;
+  istringstream(file_readline(dir + ENERGY_FILE)) >> energy;
+  readings->insert(make_pair(name, energy));
 }
 
 map<string, uint64_t> measure_energy() {
-        map<string, uint64_t> readings;
-        vector<string> powerzones = find_in_dir(ENERGY_ROOT, "intel-rapl:");
-        for(auto &zone : powerzones) {
-                string zonedir = string(ENERGY_ROOT) + "/" + zone + "/";
-                push_energy_info(&readings, zonedir);
-                vector<string> subzones = find_in_dir(zonedir, zone);
-                for(auto &sub : subzones) {
-                        // path join in C++
-                        push_energy_info(&readings, zonedir + sub + "/");
-                }
-        }
-        return readings;
+  map<string, uint64_t> readings;
+  vector<string> powerzones = find_in_dir(ENERGY_ROOT, "intel-rapl:");
+  for(auto &zone : powerzones) {
+    string zonedir = string(ENERGY_ROOT) + "/" + zone + "/";
+    push_energy_info(&readings, zonedir);
+    vector<string> subzones = find_in_dir(zonedir, zone);
+    for(auto &sub : subzones) {
+      // path join in C++
+      push_energy_info(&readings, zonedir + sub + "/");
+    }
+  }
+  return readings;
 }
 
 INTERPOSE (exit)(int rc) {
-        shut_down();
-        real::exit(rc);
+  shut_down();
+  real::exit(rc);
 }
 
 INTERPOSE (_exit)(int rc) {
-        shut_down();
-        real::_exit(rc); 
+  shut_down();
+  real::_exit(rc); 
 }
 
 INTERPOSE (_Exit)(int rc) {
-        shut_down();
-        real::_Exit(rc); 
+  shut_down();
+  real::_Exit(rc); 
 }
 
 /**
@@ -199,14 +200,14 @@ INTERPOSE (_Exit)(int rc) {
  *                 and https://github.com/ccurtsinger/interpose
  */
 extern "C" int __libc_start_main(main_fn_t main_fn, int argc, char** argv, void (*init)(),
-                void (*fini)(), void (*rtld_fini)(), void* stack_end) {
+                                 void (*fini)(), void (*rtld_fini)(), void* stack_end) {
 
-        //Find original __libc_start_main
-        auto og_libc_start_main = (decltype(__libc_start_main)*)dlsym(RTLD_NEXT, "__libc_start_main");
+  //Find original __libc_start_main
+  auto og_libc_start_main = (decltype(__libc_start_main)*)dlsym(RTLD_NEXT, "__libc_start_main");
 
-        //Save original main function
-        og_main = main_fn;
+  //Save original main function
+  og_main = main_fn;
 
-        //Running original __libc_start_main with wrapped main
-        return og_libc_start_main(wrapped_main, argc, argv, init, fini, rtld_fini, stack_end); 
+  //Running original __libc_start_main with wrapped main
+  return og_libc_start_main(wrapped_main, argc, argv, init, fini, rtld_fini, stack_end); 
 }
