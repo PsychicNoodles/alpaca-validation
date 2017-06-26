@@ -4,6 +4,7 @@
 #include "x86jump.h"
 
 #include <arpa/inet.h>
+#include <bitset>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
@@ -11,85 +12,197 @@
 #include <unistd.h>
 
 #include <fstream>
-#include <string>
 #include <iostream>
-#include <queue>
-#include <array>
 
 #define PAGE_SIZE 4096
 
 using namespace std;
 
-
 typedef struct {
-        uint8_t flag;
-        uint64_t rax;
-        uint64_t rdx;
-        float xmm0[4];
-        float xmm1[4]; 
+  uint8_t flag;
+  uint64_t rax;
+  uint64_t rdx;
+  float xmm0[4];
+  float xmm1[4]; 
 } ret_t; 
 
 
-queue<ret_t> returns;
+ret_t returns[MAX_RETURNS];
+size_t returns_index = 0;
+size_t returns_filled = 0; 
 
-queue<uint64_t> write_count_queue; 
-queue<uint64_t> writes; //returning from write-logger
+uint64_t write_syscall_counts[MAX_RETURNS];
+size_t write_syscall_counts_index = 0;
+size_t write_syscall_counts_filled = 0;
 
-void mimic_writes_disabler(uint64_t write_count);
+bool flags[MAX_SYSCALLS + MAX_WRITES];
+size_t flags_index = 0;
+size_t flags_filled = 0;
+
+uint64_t syses[MAX_SYSCALLS];
+size_t syses_index = 0;
+size_t syses_filled = 0;
+
+uint64_t writes[MAX_WRITES]; //returning from write-logger
+size_t writes_index = 0;
+size_t writes_filled = 0;
+
+void mimic_write();
+bool mimic_syscall();
 
 void disabled_fn() {
-        fprintf(stderr, "disabled_fn\n");
+  fprintf(stderr, "disabled_fn\n");
 
-        uint64_t wc = write_count_queue.front();
-        write_count_queue.pop();
+  if (write_syscall_counts_index > write_syscall_counts_filled) {
+          fprintf(stderr, "write_syscall_counts_index out of bounds!\n");
+          exit(2);
+  }
 
-        if (wc != 0) mimic_writes_disabler(wc);
+  uint64_t count = write_syscall_counts[write_syscall_counts_index++];
+  
+  fprintf(stderr, "write/syscall count %lu\n", count);
+  for(int i = 0; i < count; i++) {
 
-        ret_t curr_return = returns.front();
-        returns.pop();
+    if (flags_index > flags_filled) {
+            fprintf(stderr, "flags_index out of bounds!\n");
+            exit(2);
+    }
 
-        fprintf(stderr, "flag: %d\n", curr_return.flag);
+    bool flag = flags[flags_index++];
+    fprintf(stderr, "flag pop: %d\n", flag ? 1 : 0);
+    if(flag) {
+      fprintf(stderr, "mimicing write\n");
+      mimic_write();
+    } else {
+      if (!mimic_syscall()) {
+        fprintf(stderr, "syscall mimicing failed!\n");
+        exit(2);
+      }
+    }
+  }
 
-        if(curr_return.flag & 0b11110000) {
-                fprintf(stderr, "only rax and rdx supported (%d)\n", curr_return.flag);
-                exit(5);
-        }
+  if (returns_index > returns_filled) {
+          fprintf(stderr, "returns_index is out of bounds!\n");
+          exit(2);
+  }
 
-        if(curr_return.flag & 0b00001000) fprintf(stderr, "xmm1: %lf %lf %lf %lf\n", curr_return.xmm1[0], curr_return.xmm1[1],  curr_return.xmm1[2],  curr_return.xmm1[3]);
-        if(curr_return.flag & 0b00000100) fprintf(stderr, "xmm0: %lf %lf %lf %lf\n", curr_return.xmm0[0], curr_return.xmm0[1],  curr_return.xmm0[2],  curr_return.xmm0[3]);
+  ret_t curr_return = returns[returns_index++];
 
-                
-        if(curr_return.flag & 0b00000010) fprintf(stderr, "rdx: %lu\n", curr_return.rdx);
-        if(curr_return.flag & 0b00000001) fprintf(stderr, "rax: %lu\n", curr_return.rax);
- 
-        if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
-        if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
+  fprintf(stderr, "flag: %d\n", curr_return.flag);
+
+  if(curr_return.flag & 0b00001000) fprintf(stderr, "xmm1: %.1f %.1f %.1f %.1f\n", curr_return.xmm1[0], curr_return.xmm1[1], curr_return.xmm1[2], curr_return.xmm1[3]);
+  if(curr_return.flag & 0b00000100) fprintf(stderr, "xmm0: %.1f %.1f %.1f %.1f\n", curr_return.xmm0[0], curr_return.xmm0[1], curr_return.xmm0[2], curr_return.xmm0[3]);
         
-        if(curr_return.flag & 0b00000010) asm("" : : "d"(curr_return.rdx) : );
-        //other registers and if statements (comparison) use rax to store their values so it should come last 
-        if(curr_return.flag & 0b00000001) asm("" : : "a"(curr_return.rax) : );
+  if(curr_return.flag & 0b00000010) fprintf(stderr, "rdx: %lu\n", curr_return.rdx);
+  if(curr_return.flag & 0b00000001) fprintf(stderr, "rax: %lu\n", curr_return.rax);
+
+  if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
+  
+  if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
+  
+  if(curr_return.flag & 0b00000010) asm("" : : "d"(curr_return.rdx) : );
+  //other registers and if statements (comparison) use rax to store their values so it should come last
+  
+  if(curr_return.flag & 0b00000001) asm("" : : "a"(curr_return.rax) : );
 }
 
+//returns true upon correctly mimicing a syscall
+bool mimic_syscall() {
 
-void mimic_writes_disabler(uint64_t write_count) {
-        fprintf(stderr, "mimicing writes with count %lu\n", write_count);
-        for(int i = 0; i < write_count; i++){
-                uint64_t* memory_dest = (uint64_t*) writes.front();
-                writes.pop();
-                uint64_t val = writes.front();
-                writes.pop();
-                *memory_dest = val;
-                fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
+        if (syses_index > syses_filled) {
+                fprintf(stderr, "syses_index is out of bounds (%zu at initial)!\n", syses_index);
+                exit(2);
+        }
+        uint64_t sys_num = syses[syses_index++];
+
+        syscall_t syscall_struct = syscalls[sys_num];
+        int args_no = syscall_struct.args;
+        fprintf(stderr, "mimicing syscall %lu name %s num args %d\n", sys_num, syscall_struct.name.c_str(), args_no);
+
+        if (syses_index + args_no + 1 > syses_filled) { //+1 for the return 
+                fprintf(stderr, "syses_index is out of bounds (%zu at params)!\n", syses_index);
+                exit(2);
+        }
+        
+        if (args_no > 0) asm("mov %0, %%rdi" : : "r"(syses[syses_index++]) : );
+        if (args_no > 1) asm("mov %0, %%rsi" : : "r"(syses[syses_index++]) : );
+        if (args_no > 2) asm("mov %0, %%rdx" : : "r"(syses[syses_index++]) : );
+        if (args_no > 3) asm("mov %0, %%r10" : : "r"(syses[syses_index++]) : );
+        if (args_no > 4) asm("mov %0, %%r8" : : "r"(syses[syses_index++]) : );
+        if (args_no > 5) asm("mov %0, %%r9" : : "r"(syses[syses_index++]) : );
+
+        uint64_t original_ret = syses[syses_index++];
+
+        //calling
+        asm("mov %0, %%rax; syscall": : "r" (sys_num):);
+ 
+        uint64_t curr_ret;
+        asm("mov %%rax, %0": "=r" (curr_ret): :);
+        fprintf(stderr, "expected %x ret, got %x\n", original_ret, curr_ret);
+        return original_ret == curr_ret; 
+}
+
+void mimic_write() {
+
+        if (writes_index + 1 > writes_filled) { // + 1 for value
+                fprintf(stderr, "writes_index is out of bounds!\n");
+                exit(2);
+        }
+        
+        uint64_t* memory_dest = (uint64_t*) writes[writes_index++];
+        uint64_t val = writes[writes_index++];
+
+        *memory_dest = val;
+        fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
+}
+
+void read_syscalls(){
+        fprintf(stderr, "reading syscalls\n");
+  
+        uint64_t buffer; 
+        while(sys_file.read((char*) &buffer, sizeof(uint64_t))){
+
+                if (syses_filled >= MAX_SYSCALLS) {
+                        fprintf(stderr, "syses_filled is out of bounds!\n");
+                        exit(2);
+                }
+
+                fprintf(stderr, "read syscall num %lu\n", buffer);
+                syses[syses_filled++] = buffer;
+                uint64_t num_params = syscalls[buffer].args;
+                
+                if (syses_filled + num_params + 1 >= MAX_SYSCALLS) { // +1 for return
+                        fprintf(stderr, "syses_filled is out of bounds!\n");
+                        exit(2);
+                }
+
+                fprintf(stderr, "reading %lu syscall params\n", num_params);
+                for (int i = 0; i < num_params; i++) {
+                        sys_file.read((char*) &buffer, sizeof(uint64_t));
+                        fprintf(stderr, "read param %lu\n", buffer);
+                        syses[syses_filled++] = buffer;
+                }
+                fprintf(stderr, "reading in syscall ret\n");
+                sys_file.read((char*) &buffer, sizeof(uint64_t));
+                fprintf(stderr, "reading return %lu\n", buffer);
+                syses[syses_filled++] = buffer;
+                fprintf(stderr, "logged syscall in disabler: %p\n", (void*)buffer);
         }
 }
+
 
 //first log memory address
 //second log value at the mem address (both uint64_t)
 void read_writes() {
-        uint64_t buf;
-        while (write_file.read((char*) &buf, sizeof(uint64_t))) {
-                writes.push(buf);
-                fprintf(stderr, "logged writes in disabler: %p\n", (void*)buf);
+        uint64_t buffer;
+        while (write_file.read((char*) &buffer, sizeof(uint64_t))) {
+                if (writes_filled >= MAX_WRITES) {
+                        fprintf(stderr, "writes_filled is out of bounds!\n");
+                        exit(2);
+                }
+          
+                writes[writes_filled++] = buffer;
+                fprintf(stderr, "logged writes in disabler: %p (uint64_t %lu) ", (void*)buffer, buffer);
         }
 }
 
@@ -97,31 +210,66 @@ void read_writes() {
 //second log return struct
 
 void read_returns() {
-        uint64_t buf;
-        while(return_file.read((char*) &buf, sizeof(uint64_t))) {
-                cerr << "return_file tellg: " << return_file.tellg() << "\n";
-                fprintf(stderr, "wc: %lu\n", buf);
-                write_count_queue.push(buf);
+
+        uint64_t write_sys_count;
+        while(return_file.read((char*) &write_sys_count, sizeof(uint64_t))) {
+                fprintf(stderr, "write_sys_count %lu\n", write_sys_count);
+
+                if (write_syscall_counts_filled >= MAX_RETURNS) {
+                        fprintf(stderr, "write_sys_count_filled is out of bounds!\n");
+                        exit(2);
+                }
+     
+                write_syscall_counts[write_syscall_counts_filled++] = write_sys_count; 
+
+                fprintf(stderr, "reading write/syscall flag ");
+                for (int i = 0; i < (write_sys_count/8) + 1; i++) {
+                        uint8_t buf;
+                        return_file.read((char*) &buf, sizeof(uint8_t));
+
+                        bitset<8> byte(buf); 
+                        for (int j = 0; j < 8; j++) {
+
+                                if (flags_filled >= (MAX_RETURNS + MAX_SYSCALLS)) {
+                                        fprintf(stderr, "flags_filled is out of bounds!\n");
+                                        exit(2);
+                                }
+                                flags[flags_filled++] = byte.test(j);
+                                fprintf(stderr, "%d", byte.test(j) ? 1 : 0);
+                        }
+                        fprintf(stderr, " ");
+                }
+                fprintf(stderr, "\n");
+    
 
                 ret_t return_struct; 
                 return_file.read((char*) &return_struct.flag, 1);
-                fprintf(stderr, "flag is: %d\n", return_struct.flag);
+                fprintf(stderr, "flag %hhu\n", return_struct.flag);
 
-                if(return_struct.flag & 0b00000001) return_file.read((char*) &return_struct.rax, 8);
-                if(return_struct.flag & 0b00000010) return_file.read((char*) &return_struct.rdx, 8);
+                if(return_struct.flag & 0b00000001) {
+                        return_file.read((char*) &return_struct.rax, 8);
+                        fprintf(stderr, "rax %lu\n", return_struct.rax);
+                }
+                if(return_struct.flag & 0b00000010) {
+                        return_file.read((char*) &return_struct.rdx, 8);
+                        fprintf(stderr, "rdx %lu\n", return_struct.rdx);
+                }
 
                 if(return_struct.flag & 0b00000100) {
-                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm0[i], sizeof(float));
-                        fprintf(stderr, "xmm0: %.1f %.1f %.1f %.1f\n", return_struct.xmm0[0], return_struct.xmm0[1], return_struct.xmm0[2], return_struct.xmm0[3]);
+                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm0[i], 4);
+                        fprintf(stderr, "logging value: %lf\n", *((double*)return_struct.xmm0));
                 }
 
                 if(return_struct.flag & 0b00001000) {
-                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm1[i], sizeof(float));
-
-                        fprintf(stderr, "xmm1: %.1f %.1f %.1f %.1f\n", return_struct.xmm1[0], return_struct.xmm1[1], return_struct.xmm1[2], return_struct.xmm1[3]);
+                        for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm1[i], 4);
                 }
 
-                returns.push(return_struct);
+                if (returns_filled >= MAX_RETURNS) {
+                        fprintf(stderr, "returns_filled is out of bounds!\n");
+                        exit(2);
+                }
+                
+                returns[returns_filled++] = return_struct;
         }
         
         uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
