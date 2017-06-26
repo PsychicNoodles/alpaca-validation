@@ -429,6 +429,7 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
     
   for (int i = 0; i < num_params; i++) {
     uint64_t reg_val = get_register(syscall_params[i], context);
+    fprintf(stderr, "syscall param %d is %lu\n", i, reg_val);
     sys_file.write((char*) &reg_val, sizeof(uint64_t));
   }
  

@@ -123,34 +123,46 @@ bool mimic_syscall() {
                 fprintf(stderr, "syses_index is out of bounds (%zu at params)!\n", syses_index);
                 exit(2);
         }
-        
-        if (args_no > 0) asm("mov %0, %%rdi" : : "r"(syses[syses_index++]) : );
-        if (args_no > 1) asm("mov %0, %%rsi" : : "r"(syses[syses_index++]) : );
-        if (args_no > 2) asm("mov %0, %%rdx" : : "r"(syses[syses_index++]) : );
-        if (args_no > 3) asm("mov %0, %%r10" : : "r"(syses[syses_index++]) : );
-        if (args_no > 4) asm("mov %0, %%r8" : : "r"(syses[syses_index++]) : );
-        if (args_no > 5) asm("mov %0, %%r9" : : "r"(syses[syses_index++]) : );
 
+        for(int i = 0; i < args_no; i++) {
+                fprintf(stderr, "syscall param %d is %lu\n", i, syses[syses_index + i]);
+        }
+
+        
+        uint64_t param_regs[6];//temp_rdi, temp_rsi, temp_rdx, temp_r10, temp_r8, temp_r9; 
+
+        for (int i = 0; i < args_no; i++) param_regs[i] = syses[syses_index++]; 
+        
         uint64_t original_ret = syses[syses_index++];
+        
+        if (args_no > 0) asm("mov %0, %%rdi" : : "r"(param_regs[0]) : );
+        if (args_no > 3) asm("mov %0, %%r10" : : "r"(param_regs[3]) : );
+        if (args_no > 4) asm("mov %0, %%r8" : : "r"(param_regs[4]) : );
+        if (args_no > 5) asm("mov %0, %%r9" : : "r"(param_regs[5]) : );
+        if (args_no > 1) asm("mov %0, %%rsi" : : "r"(param_regs[1]) : );
+        if (args_no > 2) asm("mov %0, %%rdx" : : "r"(param_regs[2]) : );
 
         //calling
         asm("mov %0, %%rax; syscall": : "r" (sys_num):);
  
         uint64_t curr_ret;
         asm("mov %%rax, %0": "=r" (curr_ret): :);
-        fprintf(stderr, "expected %x ret, got %x\n", original_ret, curr_ret);
+        fprintf(stderr, "expected %lx ret, got %lx\n", original_ret, curr_ret);
         return original_ret == curr_ret; 
 }
 
 void mimic_write() {
-
+        fprintf(stderr, "time to mimic writes\n");
         if (writes_index + 1 > writes_filled) { // + 1 for value
                 fprintf(stderr, "writes_index is out of bounds!\n");
                 exit(2);
         }
-        
+
+        fprintf(stderr, "getting mem dest\n");
         uint64_t* memory_dest = (uint64_t*) writes[writes_index++];
+        fprintf(stderr, "getting val\n");
         uint64_t val = writes[writes_index++];
+        fprintf(stderr, "got %p mem and %lu val\n", memory_dest, val);
 
         *memory_dest = val;
         fprintf(stderr, "wrote %lu into %p\n", val, (void*)memory_dest);
