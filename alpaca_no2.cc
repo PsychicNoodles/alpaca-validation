@@ -250,6 +250,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
   if(waiting_syscall) {
           log_sys_ret(context->uc_mcontext.gregs[REG_RAX]);
+          fprintf(stderr, "rax logged %lld",context->uc_mcontext.gregs[REG_RAX]);
           waiting_syscall = false;
   }
 
@@ -330,7 +331,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     fprintf(stderr, "special case: call\n");
     call_count++;
     break;
-
     //readonly 1 operand instructions
   case UD_Iclflush: case UD_Iclts: case UD_Iffree: case UD_Iffreep:
   case UD_Ifld1: case UD_Ifldcw: case UD_Ifldenv: case UD_Ifldl2e:
@@ -383,11 +383,12 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
           fprintf(stderr, "3-operand instructions not supported yet\n");
           exit(2);
         }
+        i++;
       }
-      i++;
     } while (i < MAX_OPERANDS && op != NULL);
 
-    test_operand(&ud_obj, 0, context); 
+    if (i == 0) fprintf(stderr, "0 operand instruction\n"); //not a write
+    else test_operand(&ud_obj, 0, context); 
     break;
   }
 
@@ -436,6 +437,7 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
 }
 
 void log_sys_ret(uint64_t ret_value_reg) {
+  fprintf(stderr, "syscall return value is %lu\n", ret_value_reg);
   sys_file.write((char*) &ret_value_reg, sizeof(uint64_t));
 }
 

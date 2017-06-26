@@ -96,18 +96,37 @@ void disabled_fn() {
   if(curr_return.flag & 0b00000010) fprintf(stderr, "rdx: %lu\n", curr_return.rdx);
   if(curr_return.flag & 0b00000001) fprintf(stderr, "rax: %lu\n", curr_return.rax);
 
-  if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
+  if(curr_return.flag & 0b00001000) {
+          asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
+//          fprintf(stderr, "moving into xmm1\n");
+  }
+          
+  if(curr_return.flag & 0b00000100) {
+          asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
+//          fprintf(stderr, "moving into xmm0\n");
+  }
   
-  if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
-  
-  if(curr_return.flag & 0b00000010) asm("" : : "d"(curr_return.rdx) : );
+  if(curr_return.flag & 0b00000010) {
+          asm("" : : "d"(curr_return.rdx) : );
+//           fprintf(stderr, "moving into rdx\n");
+  }
   //other registers and if statements (comparison) use rax to store their values so it should come last
   
-  if(curr_return.flag & 0b00000001) asm("" : : "a"(curr_return.rax) : );
+  if(curr_return.flag & 0b00000001) {
+          asm("" : : "a"(curr_return.rax) : );
+//        fprintf(stderr, "moving into rax\n");
+  }
+
+  //fprintf(stderr, "disble function successful!\n");
 }
 
 //returns true upon correctly mimicing a syscall
 bool mimic_syscall() {
+
+        for (int i = 0; i < 10; i++) {
+                fprintf(stderr, "some values after syscall called: %lu, at index %lu\n", syses[syses_index + i], syses_index + i);
+
+        }
 
         if (syses_index > syses_filled) {
                 fprintf(stderr, "syses_index is out of bounds (%zu at initial)!\n", syses_index);
@@ -124,17 +143,15 @@ bool mimic_syscall() {
                 exit(2);
         }
 
-        for(int i = 0; i < args_no; i++) {
-                fprintf(stderr, "syscall param %d is %lu\n", i, syses[syses_index + i]);
-        }
-
         
         uint64_t param_regs[6];//temp_rdi, temp_rsi, temp_rdx, temp_r10, temp_r8, temp_r9; 
 
-        for (int i = 0; i < args_no; i++) param_regs[i] = syses[syses_index++]; 
+        for (int i = 0; i < args_no; i++) {
+                fprintf(stderr, "syscall param %d is %lu\n", i, syses[syses_index]);
+                param_regs[i] = syses[syses_index++];
+        }
         
-        uint64_t original_ret = syses[syses_index++];
-        
+ 
         if (args_no > 0) asm("mov %0, %%rdi" : : "r"(param_regs[0]) : );
         if (args_no > 3) asm("mov %0, %%r10" : : "r"(param_regs[3]) : );
         if (args_no > 4) asm("mov %0, %%r8" : : "r"(param_regs[4]) : );
@@ -147,8 +164,10 @@ bool mimic_syscall() {
  
         uint64_t curr_ret;
         asm("mov %%rax, %0": "=r" (curr_ret): :);
-        fprintf(stderr, "expected %lx ret, got %lx\n", original_ret, curr_ret);
-        return original_ret == curr_ret; 
+
+        // uint64_t original_ret = syses[syses_index++];
+        fprintf(stderr, "expected %lx ret, got %lx\n", syses[syses_index++], curr_ret);
+        return syses[syses_index-1] == curr_ret; 
 }
 
 void mimic_write() {
@@ -196,9 +215,9 @@ void read_syscalls(){
                 }
                 fprintf(stderr, "reading in syscall ret\n");
                 sys_file.read((char*) &buffer, sizeof(uint64_t));
-                fprintf(stderr, "reading return %lu\n", buffer);
+                
+                fprintf(stderr, "reading return in read syscalls %lu\n", buffer);
                 syses[syses_filled++] = buffer;
-                fprintf(stderr, "logged syscall in disabler: %p\n", (void*)buffer);
         }
 }
 
@@ -214,7 +233,7 @@ void read_writes() {
                 }
           
                 writes[writes_filled++] = buffer;
-                fprintf(stderr, "logged writes in disabler: %p (uint64_t %lu) ", (void*)buffer, buffer);
+                //fprintf(stderr, "logged writes in disabler: %p (uint64_t %lu)\n", (void*)buffer, buffer);
         }
 }
 
