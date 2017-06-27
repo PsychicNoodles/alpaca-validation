@@ -16,7 +16,7 @@ main_fn_t og_main;
 
 static int wrapped_main(int argc, char** argv, char** env) {
   cerr << "Entered main wrapper\n";
-        
+  
   //storing the func_name searched for as the last argument
   string func_name = argv[argc-2];  
   argv[argc-2] = NULL;
@@ -54,13 +54,15 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
   argc -= 2;
 
-  map<string, uint64_t> start_readings = measure_energy();
+  energy_reading_t start_readings[NUM_ENERGY_READINGS];
+  int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
   og_main(argc, argv, env);
-  map<string, uint64_t> end_readings = measure_energy();
+  energy_reading_t end_readings[NUM_ENERGY_READINGS];
+  int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
 
-  cerr << "Energy consumption (%lu):" << end_readings.size() << endl;
-  for(auto &ent : end_readings) {
-    cerr << ent.first << ": " << ent.second - start_readings.at(ent.first) << endl;
+  cerr << "Energy consumption (" << end_readings_num << ")\n";
+  for(int i = 0; i < end_readings_num; i++) {
+    cerr << end_readings[i].zone << ": " << end_readings[i].energy - start_readings[i].energy << endl;
   }
         
   return_file.close();
@@ -136,47 +138,67 @@ uint64_t find_address(const char* file_path, string func_name) {
   //potential problem with multiple entries in the table for the same function? 
 }
 
-string file_readline(string path) {
+int file_readline(char* path, char* contents, int max) {
+  memset(contents, 0, max);
   ifstream in(path);
-  string str;
-  in >> str;
-  return str;
+  in.read(contents, max);
+  *strstr(contents, "\n") = '\0';
+  return in.gcount();
 }
 
-vector<string> find_in_dir(string dir, string substr) {
-  vector<string> res;
-  DIR* dirp = opendir(dir.c_str());
+int find_in_dir(char* dir, char* substr, char* results[], int max) {
+  int ind = 0;
+  DIR* dirp = opendir(dir);
   struct dirent* dp;
-  while((dp = readdir(dirp)) != NULL) {
-    string path = string(dp->d_name);
-    if(path.find(substr) != string::npos) {
-      res.push_back(path);
+  while((dp = readdir(dirp)) != NULL && ind < max) {
+    char* path = (char*)malloc(strlen(dp->d_name) + 1);
+    strcpy(path, dp->d_name);
+    if(strstr(path, substr) != NULL) {
+            results[ind++] = path;
     }
   }
   closedir(dirp);
-  return res;
+  return ind;
 }
 
-void push_energy_info(map<string, uint64_t>* readings, string dir) {
-  string name = file_readline(dir + ENERGY_NAME);
-  uint64_t energy;
-  istringstream(file_readline(dir + ENERGY_FILE)) >> energy;
-  readings->insert(make_pair(name, energy));
+energy_reading_t push_energy_info(char* dir) {
+        char* name = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
+        size_t ename_len = strlen(dir) + strlen(ENERGY_NAME) + 1;
+        char ename[ename_len];
+        snprintf(ename, ename_len, "%s%s", dir, ENERGY_NAME);
+        file_readline(ename, name, MAX_ENERGY_READING);
+        char* energy_str = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
+        size_t efile_len = strlen(dir) + strlen(ENERGY_FILE) + 1;
+        char efile[efile_len];
+        snprintf(efile, efile_len, "%s%s", dir, ENERGY_FILE);
+        file_readline(efile, energy_str, MAX_ENERGY_READING);
+        uint64_t energy = strtoul(energy_str, NULL, 10);
+        
+        energy_reading_t reading = { name, energy };
+        return reading; 
 }
 
-map<string, uint64_t> measure_energy() {
-  map<string, uint64_t> readings;
-  vector<string> powerzones = find_in_dir(ENERGY_ROOT, "intel-rapl:");
-  for(auto &zone : powerzones) {
-    string zonedir = string(ENERGY_ROOT) + "/" + zone + "/";
-    push_energy_info(&readings, zonedir);
-    vector<string> subzones = find_in_dir(zonedir, zone);
-    for(auto &sub : subzones) {
-      // path join in C++
-      push_energy_info(&readings, zonedir + sub + "/");
-    }
+int measure_energy(energy_reading_t* readings, int max) {
+  int ind = 0;
+  char* powerzones[MAX_POWERZONES];
+  // char* literals in c++11 force the const qualifier
+  int num_zones = find_in_dir((char*) ENERGY_ROOT, (char*) "intel-rapl:", powerzones, MAX_POWERZONES);
+  for(int i = 0; i < num_zones && ind < max; i++) {
+          char* zone = powerzones[i];
+          size_t zonedir_len = strlen(ENERGY_ROOT) + strlen(zone) + 2;
+          char zonedir[zonedir_len];
+          snprintf(zonedir, zonedir_len, "%s%s/", ENERGY_ROOT, zone);
+          readings[ind++] = push_energy_info(zonedir);
+          char* subzones[MAX_POWERZONES];
+          int num_subzones = find_in_dir(zonedir, zone, subzones, MAX_POWERZONES);
+          for(int j = 0; j < num_subzones && ind < max; j++) {
+                  size_t subzonedir_len = strlen(zonedir) + strlen(subzones[j]) + 2;
+                  char subzonedir[subzonedir_len];
+                  snprintf(subzonedir, subzonedir_len, "%s%s/", zonedir, subzones[j]);
+                  readings[ind++] = push_energy_info(subzonedir);
+          }
   }
-  return readings;
+  return ind;
 }
 
 INTERPOSE (exit)(int rc) {

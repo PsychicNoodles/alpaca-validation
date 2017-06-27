@@ -151,7 +151,9 @@ bool mimic_syscall() {
                 param_regs[i] = syses[syses_index++];
         }
         
- 
+
+        //uint64_t original_ret = syses[syses_index++];
+        
         if (args_no > 0) asm("mov %0, %%rdi" : : "r"(param_regs[0]) : );
         if (args_no > 3) asm("mov %0, %%r10" : : "r"(param_regs[3]) : );
         if (args_no > 4) asm("mov %0, %%r8" : : "r"(param_regs[4]) : );
@@ -165,9 +167,9 @@ bool mimic_syscall() {
         uint64_t curr_ret;
         asm("mov %%rax, %0": "=r" (curr_ret): :);
 
-        // uint64_t original_ret = syses[syses_index++];
-        fprintf(stderr, "expected %lx ret, got %lx\n", syses[syses_index++], curr_ret);
-        return syses[syses_index-1] == curr_ret; 
+        uint64_t original_ret = syses[syses_index++];
+        fprintf(stderr, "expected %lx ret, got %lx\n", original_ret, curr_ret);
+        return original_ret == curr_ret; 
 }
 
 void mimic_write() {

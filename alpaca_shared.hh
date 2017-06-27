@@ -17,10 +17,14 @@
 
 #include <sstream>
 #include <string>
-#include <map>
 #include <fstream>
 #include <iostream>
 
+#include <cstdlib>
+
+#define MAX_POWERZONES 128
+#define MAX_ENERGY_READING 128
+#define NUM_ENERGY_READINGS 128
 #define ENERGY_ROOT "/sys/class/powercap/intel-rapl/"
 #define ENERGY_NAME "name"
 #define ENERGY_FILE "energy_uj"
@@ -323,6 +327,11 @@ static syscall_t syscalls[283] = {
         {"signalfd", 3}
 };
 
+typedef struct {
+        char* zone;
+        uint64_t energy;
+} energy_reading_t;
+
 extern uint64_t func_address; //the address of the target function
 
 extern fstream return_file;
@@ -336,6 +345,6 @@ extern fstream sys_file;
  */
 uint64_t find_address(const char* file_path, string func_name);
 
-map<string, uint64_t> measure_energy();
+int measure_energy(energy_reading_t* readings, int max);
 
 #endif
