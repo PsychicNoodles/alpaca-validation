@@ -36,19 +36,25 @@
 
 using namespace std;
 
-uint64_t mem_writing; 
-uint64_t* stack_base;
+uint64_t mem_writing; //the destination address of an instruction that writes
+uint64_t* stack_base; //the beginning of the stack for the targeted function
 
+//keep track of the detected writes and syscall of the function 
 uint64_t write_syscall_count;
-bool write_syscall_flag[1024]; //true for write, false for syscall
 
-uint8_t func_start_byte; //the byte overwrtitten with 0xCC for single-stepping
+//true for write, false for syscall
+bool write_syscall_flag[MAX_WRITE_SYSCALL_COUNT];
 
+//the byte overwrtitten with 0xCC for single-stepping
+uint8_t func_start_byte;
+
+//registers where the return values are stored 
 ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
 ud_type_t rax_regs[5] = {UD_R_RAX, UD_R_EAX, UD_R_AX, UD_R_AH, UD_R_AL};
 ud_type_t rdx_regs[5] = {UD_R_RDX, UD_R_EDX, UD_R_DX, UD_R_DH, UD_R_DL};
 bool ret_regs_touched[NUM_RET_REGS] = {false};
 
+//the registers where the parameters of a syscall instruction are stored
 ud_type_t syscall_params[6] = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_R_R8, UD_R_R9};
 
 //function declarations
@@ -56,7 +62,7 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context);
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context);
 void initialize_ud_obj(ud_t* ud_obj);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
-void log_writes(uint64_t dest_address);
+void log_write(uint64_t dest_address);
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 void log_syscall(uint64_t sys_num, ucontext_t* context);
@@ -67,113 +73,147 @@ void log_sys_ret(uint64_t ret_value_reg);
  * func_address: (virtual) address of the function in memory
  */
 void single_step(uint64_t func_address) {
-  //        write_count = 0; //setup
+  DEBUG("Enabling single step for the function at " << hex << func_address);
   uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
+  DEBUG("Making the start of the page readable, writable, and executable");
   //making the page writable, readable and executable
   if (mprotect((void*) page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) == -1) {
-    fprintf(stderr, "%s\n", strerror(errno));
+    cerr << "mprotect failed: " << strerror(errno) << "\n";
     exit(2); 
   }
 
-  //setting the last byte to 0xCC causes a SIGTRAP signal for single-stepping
+  DEBUG("Setting the first byte to 0xCC");
+  //setting the first byte to 0xCC causes a SIGTRAP signal for single-stepping
   func_start_byte = ((uint8_t*)func_address)[0];
   ((uint8_t*)func_address)[0] = 0xCC;
-
-  //switch back to old permissions
+  DEBUG("Finished enabling single step");
 }
 
-uint64_t find_destination(const ud_operand_t* instrct, ucontext_t* context) {
+
+/**
+ *Finds the destination memory address of an instruction
+ */
+uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
+  DEBUG("Finding the destination of instruction");
   int64_t offset; //displacement offset
 
-  switch(instrct->offset) {
+  switch(op->offset) {
   case 8:
-    offset = (int8_t) instrct->lval.sbyte;
+    DEBUG("Instruction offset is 8 bits");
+    offset = (int8_t) op->lval.sbyte;
     break; 
   case 16:
-    offset = (int16_t) instrct->lval.sword;
+    DEBUG("Instruction offset is 16 bits");
+    offset = (int16_t) op->lval.sword;
     break;
   case 32:
-    offset = (int32_t) instrct->lval.sdword;
+    DEBUG("Instruction offset is 32 bits");
+    offset = (int32_t) op->lval.sdword;
     break;
   case 64:
-    offset = (int64_t) instrct->lval.sqword;
+    DEBUG("Instruction offset is 64 bits");
+    offset = (int64_t) op->lval.sqword;
     break;
   default:
+    DEBUG("Could not determine instruction offset size!");
     offset = 0;
   }
 
-  fprintf(stderr, "offset: %lu, base: %lu, index: %lu, scale: %u\n", offset, get_register(instrct->base, context), get_register(instrct->index, context), instrct->scale);
+  size_t base = get_register(op->base, context);
+  size_t index = get_register(op->index, context);
+  uint8_t scale = op->scale;
+  DEBUG("Offset: " << hex << offset << ", base: " << hex << base << ", index: " << index << ", scale: " << scale);
+  DEBUG("Finished finding destination: " << (uint64_t) (offset + base + (index * scale)));
   //calculating the memory address based on assembly register information 
-  return (uint64_t) (offset +
-                     get_register(instrct->base, context) +
-                     (get_register(instrct->index, context)*
-                      instrct->scale)); 
+  return (uint64_t) (offset + base + (index * scale)); 
 }
 
+
+/**
+ *Detects the operand type which can be a memory or a register
+ *if it is not a read only instruction than records it as a memory write
+ *if it is a register and a return register then mark it as touched 
+ */
+
 void test_operand(ud_t* obj, int n, ucontext_t* context) {
-  fprintf(stderr, "test_operand with n=%d\n", n);
+  DEBUG("Testing operand " << n);
         
-  const ud_operand_t* instrct = ud_insn_opr(obj, n);
-        
-  bool is_mem_opr = instrct->type == UD_OP_MEM;
-  bool is_reg_opr = instrct->type == UD_OP_REG;
-        
-  fprintf(stderr, "is_mem_opr: %s\n", is_mem_opr ? "true" : "false");
-  fprintf(stderr, "is_reg_opr: %s\n", is_reg_opr ? "true" : "false");
-  fprintf(stderr, "base of opr %d: %d\n", n, instrct->base);
+  const ud_operand_t* op = ud_insn_opr(obj, n);
+  
+  bool is_mem_opr = op->type == UD_OP_MEM;
+  bool is_reg_opr = op->type == UD_OP_REG;
 
+  DEBUG("The operand is " << (is_mem_opr ? "" : "not ") << "a memory operand");
+  DEBUG("The operand is " << (is_reg_opr ? "" : "not ") << "a register operand");
+  
   if (is_mem_opr) {
-    uint64_t mem_address = find_destination(instrct, context);
-    fprintf(stderr, "memory address after find destination: %p\n", (void*)mem_address);
-                
-    if (just_read(mem_address, is_mem_opr, context)) fprintf(stderr, "read in operand %d\n", n);
-    else mem_writing = mem_address;
-    if (instrct->base == UD_R_RIP) mem_writing += ud_insn_len(obj);
+    uint64_t mem_address = find_destination(op, context);
+    DEBUG("Found the destination memory address " << hex << mem_address);
+    
+    if (just_read(mem_address, is_mem_opr, context)) {
+      DEBUG("Operand only reads");
+    }
+    else {
+      DEBUG("Operand may write, saving the destination address");
+      mem_writing = mem_address;
+    }
+    if (op->base == UD_R_RIP) {
+      DEBUG("Instruction is offset the RIP, adding the size of the instruction (" << ud_insn_len(obj) << ")");
+      mem_writing += ud_insn_len(obj);
+    }
   } else if (is_reg_opr) {
-
+    DEBUG("Checking if the register operand is a return register");
     for (int i = 0; i < NUM_RET_REGS; i ++) {
       if (i == 0) {
         for (int j = 0; j < 5; j++) {
-          if (instrct->base == rax_regs[j]) {
+          if (op->base == rax_regs[j]) {
+            DEBUG("Register operand is RAX");
             ret_regs_touched[i] = true;
           }
         }
       } else if (i == 1) {
         for (int j = 0; j < 5; j++) {
-          if (instrct->base == rdx_regs[j]) {
+          if (op->base == rdx_regs[j]) {
+            DEBUG("Register operand is RDX");
             ret_regs_touched[i] = true;
           }
         }
       } else {
-        if (instrct->base == ret_regs[i]) {
+        if (op->base == ret_regs[i]) {
+          DEBUG("Register operand is " << (i == 2 ? "XMM0" : "XMM1"));
           ret_regs_touched[i] = true;
         }
       }
     }
   }
+
+  DEBUG("Finished testing operand");
 }
 
+
+
+
 void initialize_ud(ud_t* ud_obj) {
+  DEBUG("Initializing the udis86 object");
   ud_init(ud_obj);
   ud_set_mode(ud_obj, 64);
   ud_set_syntax(ud_obj, UD_SYN_ATT);
   ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
+  DEBUG("Finished initializing the udis86 object");
 }
 
+
+
 void log_returns(ucontext_t* context) {
-  fprintf(stderr, "writing write/syscall count %lu\n", write_syscall_count);
+  DEBUG("Logging returns");
+  DEBUG("Logging count of writes/syscalls: " << write_syscall_count);
   return_file.write((char*) &write_syscall_count, sizeof(uint64_t));
 
-  if(write_syscall_count > 0) {
-    fprintf(stderr, "write/syscall flag should be ");
-    for(int i = 0; i < write_syscall_count; i++) {
-      fprintf(stderr, "%d", write_syscall_flag[i] == true ? 1 : 0);
-    }
-    fprintf(stderr, "\n");
-  }
-
+  DEBUG("Logging write/syscall flag");
+  //flag to switch between memory writes and syscalls
   bitset<8> flag_byte;
+  //updates 8 bits at a time and log the flag 
   for(int i = 0; i < (write_syscall_count / 8) + 1; i++) {
     flag_byte.reset(); 
     for(int j = 0; j < 8 && j + i * 8 < write_syscall_count; j++) {
@@ -181,35 +221,38 @@ void log_returns(ucontext_t* context) {
         flag_byte.set(j, true);
       }
     }
-    fprintf(stderr, "writing write/syscall flag byte %s\n", flag_byte.to_string().c_str());
+    DEBUG("Write/syscall flag byte: " << flag_byte);
     return_file.write((char*)&flag_byte, 1);
   }
-        
+
   uint8_t reg_flag = 0; 
-  //which/how many registers we're writing to
+  //which registers we're writing to
   for (int i = 0; i < NUM_RET_REGS; i++) {
     if (ret_regs_touched[i]) reg_flag |= (1 << i);
   }
 
-  fprintf(stderr, "writing reg_flag: %d\n", reg_flag);
+  DEBUG("Logging register flag: " << hex << reg_flag);
   return_file.write((char*) &reg_flag, 1);
 
+  DEBUG("Logging return registers");
+  //logging the return registers
   for (int i = 0; i < 4; i++) {
     if (ret_regs_touched[i]) {
       if(i < 2) { //integer types
         uint64_t buf = get_register(ret_regs[i], context);
+        DEBUG((i == 0 ? "RAX" : "RDX") << " register value: " << buf);
         return_file.write((char*) &buf, 8);
-        fprintf(stderr, "value of %d register is: %lu\n", i, buf);
       } else { //floating point types
-        fprintf(stderr, "fp type (%d)\n", i);
         float* buf = (float*)get_fp_register(ret_regs[i], context);
-
+        DEBUG((i == 2 ? "XMM0" : "XMM1") << " register values: " << buf[0] << ", " << buf[1] << ", " << buf[2] << ", " << buf[3]);
         for (int j = 0; j < 4; j++)
           return_file.write((char*) &buf[j], sizeof(float));
                                 
       }
     }
-  } 
+  }
+
+  DEBUG("Finished logging returns");
 }
 
 
@@ -223,15 +266,14 @@ void log_returns(ucontext_t* context) {
  * void* cont: context of the instruction with general register informatio
  */
 void trap_handler(int signal, siginfo_t* info, void* cont) {
-
-  fprintf(stderr, "in trap handler\n");
+  DEBUG("Trap handler triggered");
   if (signal != SIGTRAP) {
-    fprintf(stderr, "Signal received not SIGTRAP\n");
+    cerr << "Signal received was not a SIGTRAP: " << signal << "\n";
     exit(2);
   }
 
   //used to keep track of the stack manipulation 
-  static int run = 0;
+  static bool first_run = true;
   static bool return_reached = false;
   static int call_count = 0;
   static ud_t ud_obj;
@@ -240,45 +282,44 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
 
   //logging writes
-  fprintf(stderr, "mem_writing = %p (cc %d)\n", (void*)mem_writing, call_count);
   if (mem_writing != 0) {
-    log_writes(mem_writing);
+    DEBUG("Last instruction was a memory write to address: " << mem_writing);
+    log_write(mem_writing);
     mem_writing = 0;
   }
   
   ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
+  //if the last instruction was a syscall then grab and log the return value
   if(waiting_syscall) {
-          log_sys_ret(context->uc_mcontext.gregs[REG_RAX]);
-          fprintf(stderr, "rax logged %lld",context->uc_mcontext.gregs[REG_RAX]);
-          waiting_syscall = false;
+    DEBUG("Last instruction was a syscall, gathering return value");
+    log_sys_ret(context->uc_mcontext.gregs[REG_RAX]);
+    waiting_syscall = false;
   }
 
   if (func_start_byte == 0x55) {
-    fprintf(stderr, "func_start_byte is 0x55\n");
-    if (!run) {
+    DEBUG("Function starting byte is 0x55");
+    if (first_run) {
+      DEBUG("Initializing stack base");
       //Faking the %rbp stack push to account for the 0xCC byte overwrite
       stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
       uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
 
-      fprintf(stderr, "stack_base: %p, rdi: %p\n", (void*)stack_base, (void*)context->uc_mcontext.gregs[REG_RDI]);
+      DEBUG("Stack base is " << stack_base);
 
-      //needs further explanation 
       stack_base--;
       *stack_base = frame;
       context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack_base;
 
       initialize_ud(&ud_obj);
 
-      run = 1;
+      first_run = false;
       ((uint8_t*)func_address)[0] = func_start_byte;
-    }
-                
+    }      
   }  else {
-
     non_regular_start = true;
-    run = 1; 
-    fprintf(stderr, "func_start_byte was not 0x55, is %hhu\n",func_start_byte);
+    first_run = false;
+    DEBUG("Function starting byte is irregular: " << hex << func_start_byte);
     ((uint8_t*)func_address)[0] = func_start_byte; //putting the original byte back
                     
     initialize_ud(&ud_obj);
@@ -290,45 +331,46 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
   //if end of a function is reached in the next step  
   if (return_reached) {
+    DEBUG("The last instruction was a return");
     call_count--;
     return_reached = false;
-              
-    if(call_count < 0) {
-      fprintf(stderr, "returned from target function\n");
-                                
-      //keep track of writing number
-      fprintf(stderr, "write_syscall_count: %lu\n", write_syscall_count);
 
+    if(call_count < 0) {
+      DEBUG("The target function has returned");
+      
       log_returns(context);
-                        
+
       if (!non_regular_start) {
+        DEBUG("Stopping single stepping");
         //stops single-stepping
         context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
       }
 
+      DEBUG("Enabling single step once the target function is called again");
       single_step(func_address);
-  
+
+      DEBUG("Resetting static variables");
+      // reset for next time target function is called
       non_regular_start = false; 
-      run = 0;
+      first_run = true;
       call_count = 0;
       write_syscall_count = 0;
-
-      memset(ret_regs_touched, false, NUM_RET_REGS*sizeof(bool)); 
+      memset(ret_regs_touched, false, NUM_RET_REGS); 
 
       return;
     }
   }
 
-  fprintf(stderr, "assembly instruction: %s\n", ud_insn_asm(&ud_obj));
+  DEBUG("Instruction: " << ud_insn_asm(&ud_obj));
 
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
-    fprintf(stderr, "special case: ret (call_count: %d)\n", call_count);
+    DEBUG("Special case: ret (call count is " << call_count << ")");
     return_reached = true;
     break;
 
   case UD_Icall:
-    fprintf(stderr, "special case: call\n");
+    DEBUG("Special case: call");
     call_count++;
     break;
     //readonly 1 operand instructions
@@ -347,98 +389,122 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   case UD_Isetl: case UD_Isetle: case UD_Iseto: case UD_Isetp: case UD_Isets:
   case UD_Isetz: case UD_Istmxcsr: case UD_Iverr: case UD_Iverw:
   case UD_Ivmclear: case UD_Ivmptrld: case UD_Ivmptrst: case UD_Ivmxon:
-    fprintf(stderr, "known readonly 1 op instruction\n");
+    DEBUG("Known readonly 1 op instruction");
     break;
     //potential write 1 operand instructions
   case UD_Idec: case UD_If2xm1: case UD_Ifabs: case UD_Ifchs: case UD_Ifcos:
   case UD_Ifnstcw: case UD_Ifnstenv: case UD_Ifnstsw: case UD_Ifptan:
   case UD_Ifrndint: case UD_Ifsin: case UD_Ifsincos: case UD_Ifsqrt:
   case UD_Iinc: case UD_Iinvlpg: case UD_Ineg: case UD_Inot:
-    fprintf(stderr, "known potential write 1 op instruction\n");
+    DEBUG("Known potential write 1 op instruction, testing op 0");
     test_operand(&ud_obj, 0, context);
     break;
     //readonly 2 operand instructions
   case UD_Ilea: case UD_Icmp:
+    DEBUG("Known readonly 2 op instruction");
     break;
     //known potential writes with 2 operands
   case UD_Imov:
-    fprintf(stderr, "known potential write 2 op instruction\n");
+    DEBUG("Known potential write 2 op instruction, testing op 0");
     test_operand(&ud_obj, 0, context);
     break;
     //readonly 3 operand instructions
   case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw:
+    DEBUG("Known readonly 3 op instruction");
     break;
     //syscall calls
-  case UD_Isyscall: case UD_Isysenter: 
+  case UD_Isyscall: case UD_Isysenter:
+    DEBUG("Special case: syscall");
     log_syscall(context->uc_mcontext.gregs[REG_RAX], context);
     waiting_syscall = true;
     break;
   default:
-    fprintf(stderr, "unknown operation, testing all operands\n");
+    DEBUG("Unknown instruction, counting operands");
     ud_operand_t* op;
     int i = 0;
     do {
       if ((op = (ud_operand_t*) ud_insn_opr(&ud_obj, i)) != NULL) {
         if (i > 1) {
-          fprintf(stderr, "3-operand instructions not supported yet\n");
+          cerr << "3-operand instructions not supported yet\n";
           exit(2);
         }
         i++;
       }
     } while (i < MAX_OPERANDS && op != NULL);
 
-    if (i == 0) fprintf(stderr, "0 operand instruction\n"); //not a write
-    else test_operand(&ud_obj, 0, context); 
+    if (i == 0) {
+      DEBUG("0 operand instruction");
+    }
+    else {
+      DEBUG("Instruction has " << i << " operands, testing op 0");
+      test_operand(&ud_obj, 0, context);
+    }
     break;
   }
 
   if (non_regular_start) {
+    DEBUG("Irregular start, so attempting to single step at the RIP");
     non_regular_start = false; 
     single_step(context->uc_mcontext.gregs[REG_RIP]); 
   } else {
+    DEBUG("Continuing to single step");
     //set TRAP flag to continue single-stepping
     context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
   }
-   
+
+  DEBUG("Finished trap handler");
 }
 
-//what happens to 3-operand instructions? 
-void log_writes(uint64_t dest_address) {
-  fprintf(stderr, "entered log writes\n");
+void log_write(uint64_t dest_address) {
+  DEBUG("Logging a write to " << hex << dest_address << ", write/syscall count is now " << write_syscall_count + 1);
+  if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
+    cerr << "Overflowing write/syscall flag array!\n";
+    exit(2);
+  }
   write_syscall_flag[write_syscall_count++] = true;
-  fprintf(stderr, "pushed write syscall flag bit, current count: %lu\n", write_syscall_count);
 
+  DEBUG("Dereferencing destination address");
   uint64_t val = *((uint64_t*)dest_address);
-        
-  fprintf(stderr, "writing to %lu address: %p\n",val, (void*) dest_address);
+
+  DEBUG("Write " << val << " to " << hex << dest_address);
         
   write_file.write((char*) &dest_address, sizeof(uint64_t));
   write_file.write((char*) &val, sizeof(uint64_t));
-  fprintf(stderr, "writing successful\n");
+
+  DEBUG("Finished logging a write");
 }
 
-//logging syscalls: uint64_t syscall num, uint64_t[] syscall params, syscall return check
-// log num of syscalls for pre and post in the return file 
 void log_syscall(uint64_t sys_num, ucontext_t* context) {
-  fprintf(stderr, "logging syscall %lu\n", sys_num);
+  DEBUG("Logging syscall (" << sys_num << ")");
+  if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
+    cerr << "Overflowing write/syscall flag array!\n";
+    exit(2);
+  }
   write_syscall_flag[write_syscall_count++] = false;
-  syscall_t syscall = syscalls[sys_num];
-  string syscall_name = syscall.name;
-  int num_params = syscall.args;
 
+  DEBUG("Looking up syscall");
+  // look up syscall information in global syscalls array
+  syscall_t syscall = syscalls[sys_num];
+  int num_params = syscall.args;
+  DEBUG("Syscall " << syscall.name << " has " << num_params << " parameters");
+
+  DEBUG("Logging syscall number");
   sys_file.write((char*) &sys_num, sizeof(uint64_t));
-    
+
+  DEBUG("Logging syscall parameters");
   for (int i = 0; i < num_params; i++) {
     uint64_t reg_val = get_register(syscall_params[i], context);
-    fprintf(stderr, "syscall param %d is %lu\n", i, reg_val);
+    DEBUG("Logging syscall parameter " << i << ": " << reg_val);
     sys_file.write((char*) &reg_val, sizeof(uint64_t));
   }
- 
+
+  DEBUG("Finished logging syscall");
 }
 
 void log_sys_ret(uint64_t ret_value_reg) {
-  fprintf(stderr, "syscall return value is %lu\n", ret_value_reg);
+  DEBUG("Logging syscall return value: " << ret_value_reg);
   sys_file.write((char*) &ret_value_reg, sizeof(uint64_t));
+  DEBUG("Finished logging syscall return value");
 }
 
 /**
@@ -449,29 +515,32 @@ void log_sys_ret(uint64_t ret_value_reg) {
  * @returns bool: true if no writes to memory; false otherwise. 
  */
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
+  DEBUG("Determining if the instruction is readonly");
   if (is_mem_opr) {
     //if the instruction tries to access memory outside of the current
     //stack frame, we know it writes to memory
 
     // -128 = red zone
     uint64_t stack_ptr = context->uc_mcontext.gregs[REG_RSP] - 128;
-                
-    fprintf(stderr, "stack frame rsp is %p to %p\n", (void*) stack_base, (void*) stack_ptr);
-                
+
+    DEBUG("The stack frame is " << hex << stack_base << " to " << hex << stack_ptr);
+
+    DEBUG("Finished determining if instruction is readonly: " << ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address));
     return ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address); 
   }
 
+  DEBUG("Finished determining if instruction is readonly: true (doesn't touch memory)");
   //if the instruction doesn't touch memory then it's fine
   return true;
 }
 
-//expand the list!
 /*
  * Translates from udis's register enum's to register addresses
  * obj: object containing the instruction to be disassembled
  * context: from the signal handler with general register information  
  */
 uint64_t get_register(ud_type_t obj, ucontext_t* context) {
+  DEBUG("Getting the register value from udis enum: " << obj);
   switch(obj) {
   case UD_R_RIP:
     return context->uc_mcontext.gregs[REG_RIP];
@@ -510,12 +579,13 @@ uint64_t get_register(ud_type_t obj, ucontext_t* context) {
   case UD_NONE:
     return 0;
   default:
-    fprintf(stderr, "unsupported register\n");
+    DEBUG("Unsupported register!");
     return -1; 
   }
 }
 
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context) {
+  DEBUG("Getting the floating point register value from udis enum: " << obj);
   switch(obj) {
   case UD_R_XMM0:
     return context->uc_mcontext.fpregs->_xmm[0].element;
@@ -550,7 +620,7 @@ uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context) {
   case UD_R_XMM15:
     return context->uc_mcontext.fpregs->_xmm[15].element;    
   default:
-    fprintf(stderr, "unsupported register\n");
+    DEBUG("Unsupported register!");
     return NULL; 
   }
 }

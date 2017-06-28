@@ -14,39 +14,54 @@ fstream sys_file;
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
+#define OUT_FMODE fstream::out | fstream::trunc | fstream::binary
+#define IN_FMODE fstream::in | fstream::binary
+
+void setup_analyzer() {
+  struct sigaction sig_action, debugger;
+  memset(&sig_action, 0, sizeof(sig_action));
+  sig_action.sa_sigaction = trap_handler;
+  sigemptyset(&sig_action.sa_mask);
+  sig_action.sa_flags = SA_SIGINFO;
+  sigaction(SIGTRAP, &sig_action, 0);
+
+  single_step(func_address);
+}
+
+void setup_disabler() {
+  read_syscalls();
+  read_writes();
+  read_returns();
+}
+
 static int wrapped_main(int argc, char** argv, char** env) {
-  cerr << "Entered main wrapper\n";
+  cerr.setf(ios::showbase);
+  DEBUG("Entered Alpaca's main");
   
   //storing the func_name searched for as the last argument
-  string func_name = argv[argc-2];  
+  string func_name = argv[argc-2];
+  DEBUG("The target function is " << func_name);
   argv[argc-2] = NULL;
 
   func_address = find_address("/proc/self/exe", func_name);
-        
+  DEBUG("The address of the target function is " << func_address);
+    
   if (strcmp(argv[argc-1], "analyze") == 0) {
-    return_file.open("return-logger", fstream::out | fstream::trunc | fstream::binary);
-    write_file.open("write-logger", fstream::out | fstream::trunc | fstream::binary);
-    sys_file.open("sys-logger", fstream::out | fstream::trunc | fstream::binary);
-    //set up for the SIGTRAP signal handler
-    struct sigaction sig_action, debugger;
-    memset(&sig_action, 0, sizeof(sig_action));
-    sig_action.sa_sigaction = trap_handler;
-    sigemptyset(&sig_action.sa_mask);
-    sig_action.sa_flags = SA_SIGINFO;
-    sigaction(SIGTRAP, &sig_action, 0);
+    DEBUG("Analyze mode");
+    
+    return_file.open("return-logger", OUT_FMODE);
+    write_file.open("write-logger", OUT_FMODE);
+    sys_file.open("sys-logger", OUT_FMODE);
 
-    single_step(func_address);
-                
+    setup_analyzer();                
   } else if (strcmp(argv[argc-1], "disable") == 0) {
-    return_file.open("return-logger", fstream::in | fstream::binary);
-    write_file.open("write-logger", fstream::in | fstream::binary);
-    sys_file.open("sys-logger", fstream::in | fstream::binary);
+    DEBUG("Disable mode");
+    
+    return_file.open("return-logger", IN_FMODE);
+    write_file.open("write-logger", IN_FMODE);
+    sys_file.open("sys-logger", IN_FMODE);
 
-    read_syscalls();
-    read_writes();
-    read_returns();
-                
-                
+    setup_disabler();
   } else {
     cerr << "Unknown mode!\n";
     exit(2);
@@ -54,15 +69,18 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
   argc -= 2;
 
+  DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
+  DEBUG("Starting test program");
   og_main(argc, argv, env);
+  DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
   int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
 
-  cerr << "Energy consumption (" << end_readings_num << ")\n";
+  cerr << "Energy consumption (" << dec << end_readings_num << ")\n";
   for(int i = 0; i < end_readings_num; i++) {
-    cerr << end_readings[i].zone << ": " << end_readings[i].energy - start_readings[i].energy << endl;
+    cerr << end_readings[i].zone << ": " << dec << end_readings[i].energy - start_readings[i].energy << "\n";
   }
         
   return_file.close();
@@ -70,7 +88,6 @@ static int wrapped_main(int argc, char** argv, char** env) {
   sys_file.close();
 
   return 0; 
-        
 }
 
 void shut_down() {
@@ -102,7 +119,7 @@ uint64_t find_address(const char* file_path, string func_name) {
 
   int read_fd = open(file_path, O_RDONLY);
   if (read_fd < 0) {
-    fprintf(stderr, "%s: %s\n", file_path, strerror(errno));
+    cerr << "error reading " << file_path << ": " << strerror(errno) << "\n";
     exit(2);
   }
 
@@ -110,24 +127,22 @@ uint64_t find_address(const char* file_path, string func_name) {
   for (auto &sec : f.sections()) {
     if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
 
-              
-    fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
+    // advanced ELF information about functions
+    /*fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
     fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
-            "Address", "Size", "Binding", "Index", "Name", "Type");
+    "Address", "Size", "Binding", "Index", "Name", "Type");*/
                 
 
     for (auto sym : sec.as_symtab()) {
       auto &d = sym.get_data();
       if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
 
-                        
-      //probably will end up writing to log_fd
-      fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
+      /*fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
               offset + d.value, d.size,
               to_string(d.binding()).c_str(),
               to_string(d.shnxd).c_str(),
               sym.get_name().c_str(),
-              to_string(d.type()).c_str());
+              to_string(d.type()).c_str());*/
                         
 
       addr = offset + d.value; 
@@ -138,6 +153,11 @@ uint64_t find_address(const char* file_path, string func_name) {
   //potential problem with multiple entries in the table for the same function? 
 }
 
+/**
+ *Reads up to max bytes from path into contents
+ *@return number of bytes read
+ */
+
 int file_readline(char* path, char* contents, int max) {
   memset(contents, 0, max);
   ifstream in(path);
@@ -146,7 +166,12 @@ int file_readline(char* path, char* contents, int max) {
   return in.gcount();
 }
 
-int find_in_dir(char* dir, char* substr, char* results[], int max) {
+/**
+ *finds up to max files and directories in dir with substring substr into results
+ *@return the number of results
+ */
+
+int find_in_dir(const char* dir, const char* substr, char* results[], int max) {
   int ind = 0;
   DIR* dirp = opendir(dir);
   struct dirent* dp;
@@ -154,49 +179,67 @@ int find_in_dir(char* dir, char* substr, char* results[], int max) {
     char* path = (char*)malloc(strlen(dp->d_name) + 1);
     strcpy(path, dp->d_name);
     if(strstr(path, substr) != NULL) {
-            results[ind++] = path;
+      results[ind++] = path;
     }
   }
   closedir(dirp);
   return ind;
 }
 
-energy_reading_t push_energy_info(char* dir) {
-        char* name = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
-        size_t ename_len = strlen(dir) + strlen(ENERGY_NAME) + 1;
-        char ename[ename_len];
-        snprintf(ename, ename_len, "%s%s", dir, ENERGY_NAME);
-        file_readline(ename, name, MAX_ENERGY_READING);
-        char* energy_str = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
-        size_t efile_len = strlen(dir) + strlen(ENERGY_FILE) + 1;
-        char efile[efile_len];
-        snprintf(efile, efile_len, "%s%s", dir, ENERGY_FILE);
-        file_readline(efile, energy_str, MAX_ENERGY_READING);
-        uint64_t energy = strtoul(energy_str, NULL, 10);
+/**
+ *reads from the energy zone name and usage files
+ *@return a struct with the name and the energy usage
+ */
+
+energy_reading_t get_energy_info(char* dir) {
+  // build name file path
+  char* name = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
+  size_t ename_len = strlen(dir) + strlen(ENERGY_NAME) + 1;
+  char ename[ename_len];
+  snprintf(ename, ename_len, "%s%s", dir, ENERGY_NAME);
+  file_readline(ename, name, MAX_ENERGY_READING);
+  
+  // build energy usage file path      
+  char* energy_str = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
+  size_t efile_len = strlen(dir) + strlen(ENERGY_FILE) + 1;
+  char efile[efile_len];
+  snprintf(efile, efile_len, "%s%s", dir, ENERGY_FILE);
+  file_readline(efile, energy_str, MAX_ENERGY_READING);
+  uint64_t energy = strtoul(energy_str, NULL, 10);
         
-        energy_reading_t reading = { name, energy };
-        return reading; 
+  energy_reading_t reading = { name, energy };
+  return reading; 
 }
+
+/**
+ *measures the energy of up to max zones/subzones into readings
+ *@return the number of zones/subzones measured 
+ */
 
 int measure_energy(energy_reading_t* readings, int max) {
   int ind = 0;
   char* powerzones[MAX_POWERZONES];
-  // char* literals in c++11 force the const qualifier
-  int num_zones = find_in_dir((char*) ENERGY_ROOT, (char*) "intel-rapl:", powerzones, MAX_POWERZONES);
+  int num_zones = find_in_dir(ENERGY_ROOT, "intel-rapl:", powerzones, MAX_POWERZONES);
+  
   for(int i = 0; i < num_zones && ind < max; i++) {
-          char* zone = powerzones[i];
-          size_t zonedir_len = strlen(ENERGY_ROOT) + strlen(zone) + 2;
-          char zonedir[zonedir_len];
-          snprintf(zonedir, zonedir_len, "%s%s/", ENERGY_ROOT, zone);
-          readings[ind++] = push_energy_info(zonedir);
-          char* subzones[MAX_POWERZONES];
-          int num_subzones = find_in_dir(zonedir, zone, subzones, MAX_POWERZONES);
-          for(int j = 0; j < num_subzones && ind < max; j++) {
-                  size_t subzonedir_len = strlen(zonedir) + strlen(subzones[j]) + 2;
-                  char subzonedir[subzonedir_len];
-                  snprintf(subzonedir, subzonedir_len, "%s%s/", zonedir, subzones[j]);
-                  readings[ind++] = push_energy_info(subzonedir);
-          }
+    char* zone = powerzones[i];
+
+    // build the zone directory path
+    size_t zonedir_len = strlen(ENERGY_ROOT) + strlen(zone) + 2;
+    char zonedir[zonedir_len];
+    snprintf(zonedir, zonedir_len, "%s%s/", ENERGY_ROOT, zone);
+    readings[ind++] = get_energy_info(zonedir);
+    
+    char* subzones[MAX_POWERZONES];
+    int num_subzones = find_in_dir(zonedir, zone, subzones, MAX_POWERZONES);
+    
+    for(int j = 0; j < num_subzones && ind < max; j++) {
+      // build the subzone directory path
+      size_t subzonedir_len = strlen(zonedir) + strlen(subzones[j]) + 2;
+      char subzonedir[subzonedir_len];
+      snprintf(subzonedir, subzonedir_len, "%s%s/", zonedir, subzones[j]);
+      readings[ind++] = get_energy_info(subzonedir);
+    }
   }
   return ind;
 }

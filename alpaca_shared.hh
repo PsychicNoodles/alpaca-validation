@@ -36,6 +36,13 @@
 
 using namespace std;
 
+//debug macro
+#ifndef NDEBUG
+#define DEBUG(x) do { clog << x << "\n"; } while(0)
+#else
+#define DEBUG(x)
+#endif
+
 typedef struct {
         string name;
         int args;

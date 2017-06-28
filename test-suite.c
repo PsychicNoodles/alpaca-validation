@@ -249,13 +249,8 @@ int main(int argc, char** argv) {
     printf("%d %d %d %ld %lld %.1f %.1lf", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g);
   }
   if(cmp(argv[1], "pointer")) {
-    pointer_t ret = pointer_func();
-    printf("returned\n");
-    
-//    printf("%d ", ret.a);
-//    printf("%.1lf ", ret.b);
-//    printf("%s", ret.c);
-//    printf("%d %.1lf %s", ret.a, ret.b, ret.c);
+    pointer_t ret = pointer_func();    
+    printf("%d %.1lf %s", ret.a, ret.b, ret.c);
   }
   if(cmp(argv[1], "triple_double")) {
     triple_double_t ret = triple_double_func();
