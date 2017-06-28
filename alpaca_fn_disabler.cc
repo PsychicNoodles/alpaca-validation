@@ -92,7 +92,7 @@ void disabled_fn() {
   }
   DEBUG("Popping a return registers struct");
   ret_t curr_return = returns[returns_index++];
-  DEBUG("Return registers flag: " << (int) curr_return.flag);
+  DEBUG("Return registers flag: " << curr_return.flag);
   
   if(curr_return.flag & 0b00001000) { DEBUG("XMM1: " << curr_return.xmm1[0] << ", " << curr_return.xmm1[1] << ", " << curr_return.xmm1[2] << ", " << curr_return.xmm1[3]); }
   if(curr_return.flag & 0b00000100) { DEBUG("XMM0: " << curr_return.xmm0[0] << ", " << curr_return.xmm0[1] << ", " << curr_return.xmm0[2] << ", " << curr_return.xmm0[3]); }
@@ -305,7 +305,7 @@ void read_returns() {
     exit(2); 
   }
 
-  DEBUG("Setting up jump from " << hex << func_address << " to " << hex << (void*) disabled_fn);
+  DEBUG("Setting up jump from " << hex << func_address << " to " << hex << disabled_fn);
   new((void*)func_address)X86Jump((void*)disabled_fn);
 
   DEBUG("Finished reading returns");
