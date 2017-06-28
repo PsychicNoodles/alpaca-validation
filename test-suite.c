@@ -213,69 +213,68 @@ int main(int argc, char** argv) {
     exit(2);
   }
         
-  if(cmp(argv[1], "bool")) printf("%d", bool_func());
-  if(cmp(argv[1], "short")) printf("%d", short_func());
-  if(cmp(argv[1], "int")) printf("%d", int_func());
-  if(cmp(argv[1], "long")) printf("%ld", long_func());
-  if(cmp(argv[1], "long_long")) printf("%lld", long_long_func());
-  if(cmp(argv[1], "float")) printf("%.1f", float_func());
-  if(cmp(argv[1], "double")) printf("%.1lf", double_func());
+  if(cmp(argv[1], "bool")) printf("%d\n", bool_func());
+  if(cmp(argv[1], "short")) printf("%d\n", short_func());
+  if(cmp(argv[1], "int")) printf("%d\n", int_func());
+  if(cmp(argv[1], "long")) printf("%ld\n", long_func());
+  if(cmp(argv[1], "long_long")) printf("%lld\n", long_long_func());
+  if(cmp(argv[1], "float")) printf("%.1f\n", float_func());
+  if(cmp(argv[1], "double")) printf("%.1lf\n", double_func());
   if(cmp(argv[1], "int_struct")) {
     int_struct_t ret = int_struct_func();
-    printf("%d", ret.a);
+    printf("%d\n", ret.a);
   }
   if(cmp(argv[1], "double_struct")) {
     double_struct_t ret = double_struct_func();
-    printf("%.1lf", ret.a);
+    printf("%.1lf\n", ret.a);
   }
   if(cmp(argv[1], "two_int")) {
     two_int_t ret = two_int_func();
-    printf("%d %d", ret.a, ret.b);
+    printf("%d %d\n", ret.a, ret.b);
   }
   if(cmp(argv[1], "two_float")) {
     two_float_t ret = two_float_func();
-    printf("%.1f %.1f", ret.a, ret.b);
+    printf("%.1f %.1f\n", ret.a, ret.b);
   }
   if(cmp(argv[1], "mixed")) {
     mixed_t ret = mixed_func();
-    printf("%d %d %.1lf", ret.a, ret.b, ret.c);
+    printf("%d %d %.1lf\n", ret.a, ret.b, ret.c);
   }
   if(cmp(argv[1], "eight_int")) {
     eight_int_t ret = eight_int_func();
-    printf("%d %d %d %d %d %d %d %d", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g, ret.h);
+    printf("%d %d %d %d %d %d %d %d\n", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g, ret.h);
   }
   if(cmp(argv[1], "everything")) {
     everything_t ret = everything_func();
-    printf("%d %d %d %ld %lld %.1f %.1lf", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g);
+    printf("%d %d %d %ld %lld %.1f %.1lf\n", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g);
   }
   if(cmp(argv[1], "pointer")) {
-    pointer_t ret = pointer_func();    
-    printf("%d %.1lf %s", ret.a, ret.b, ret.c);
+    pointer_t ret = pointer_func();
+    printf("%d %.1lf %s\n", ret.a, ret.b, ret.c);
   }
   if(cmp(argv[1], "triple_double")) {
     triple_double_t ret = triple_double_func();
-    printf("%.1lf %.1lf %.1lf", ret.a, ret.b, ret.c);
+    printf("%.1lf %.1lf %.1lf\n", ret.a, ret.b, ret.c);
   }
   if(cmp(argv[1], "global_write")) {
     global_a = 0;
     global_b = 0;
     global_write_func();
-    printf("%d %.1lf %s", global_a, global_b, global_c);
+    printf("%d %.1lf %s\n", global_a, global_b, global_c);
   }
   if(cmp(argv[1], "param_float")) {
     float a = 3.3;
     float b = param_float_func(a);
-    printf("%.1lf", b);
+    printf("%.1lf\n", b);
   }
   if(cmp(argv[1], "local")) {
     int ret = 1;
-    fprintf(stderr, "&ret: %p\n", &ret);
     local_func(&ret);
-    printf("%d", ret);
+    printf("%d\n", ret);
   }
   if(cmp(argv[1], "mmap")) {
     int* ret = mmap_func();
-    printf("%d", *ret);
+    printf("%d\n", *ret);
   }
   //how print
   //if(cmp(argv[1], "reallylong")) printf("really_long_func: %lld\n", really_long_func());

@@ -39,8 +39,10 @@ using namespace std;
 //debug macro
 #ifndef NDEBUG
 #define DEBUG(x) do { clog << x << "\n"; } while(0)
+#define DEBUG_C(fmt, ...) do { fprintf(stderr, fmt, __VA_ARGS__); } while (0)
 #else
 #define DEBUG(x)
+#define DEBUG_C(fmt, ...)
 #endif
 
 typedef struct {

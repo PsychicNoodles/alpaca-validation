@@ -231,7 +231,7 @@ void log_returns(ucontext_t* context) {
     if (ret_regs_touched[i]) reg_flag |= (1 << i);
   }
 
-  DEBUG("Logging register flag: " << hex << reg_flag);
+  DEBUG("Logging register flag: " << (int) reg_flag);
   return_file.write((char*) &reg_flag, 1);
 
   DEBUG("Logging return registers");

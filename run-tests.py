@@ -20,7 +20,7 @@ for test, res in pairs:
     sub.communicate()
     disabler = subprocess.Popen([TEST_PROG, test, test + "_func", "disable"], stdout=PIPE, stderr=PIPE)
     outdata, errdata = disabler.communicate()
-    if outdata == res:
+    if outdata == (res + "\n"):
         print "%s test was successful" % test
     else:
         print "%s test was unsuccessful (expected %s, got %s)" % (test, res, outdata)
