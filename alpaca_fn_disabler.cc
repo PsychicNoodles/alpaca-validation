@@ -94,11 +94,13 @@ void disabled_fn() {
   ret_t curr_return = returns[returns_index++];
   DEBUG("Return registers flag: " << curr_return.flag);
   
-  if(curr_return.flag & 0b00001000) { DEBUG("XMM1: " << curr_return.xmm1[0] << ", " << curr_return.xmm1[1] << ", " << curr_return.xmm1[2] << ", " << curr_return.xmm1[3]); }
-  if(curr_return.flag & 0b00000100) { DEBUG("XMM0: " << curr_return.xmm0[0] << ", " << curr_return.xmm0[1] << ", " << curr_return.xmm0[2] << ", " << curr_return.xmm0[3]); }
+  if(curr_return.flag & 0b00001000) { DEBUG("XMM1: " << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
+                                            << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])); }
+  if(curr_return.flag & 0b00000100) { DEBUG("XMM0: " << int_to_hex(curr_return.xmm0[0]) << ", " << int_to_hex(curr_return.xmm0[1])
+                                            << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3])); }
         
-  if(curr_return.flag & 0b00000010) { DEBUG("RDX: " << curr_return.rdx); }
-  if(curr_return.flag & 0b00000001) { DEBUG("RAX: " << curr_return.rax); }
+  if(curr_return.flag & 0b00000010) { DEBUG("RDX: " << int_to_hex(curr_return.rdx)); }
+  if(curr_return.flag & 0b00000001) { DEBUG("RAX: " << int_to_hex(curr_return.rax)); }
 
   if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
   if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
@@ -218,7 +220,7 @@ void read_writes() {
       cerr << "Overflowing the writes array!\n";
       exit(2);
     }
-    DEBUG("Read in write data: " << hex << buffer);
+    DEBUG("Read in write data: " << int_to_hex(buffer));
     writes[writes_filled++] = buffer;
   }
 
@@ -266,12 +268,12 @@ void read_returns() {
     if(return_struct.flag & 0b00000001) {
       DEBUG("Reading RAX");
       return_file.read((char*) &return_struct.rax, 8);
-      DEBUG("RAX is " << hex << return_struct.rax);
+      DEBUG("RAX is " << int_to_hex(return_struct.rax));
     }
     if(return_struct.flag & 0b00000010) {
       DEBUG("Reading RDX");
       return_file.read((char*) &return_struct.rdx, 8);
-      DEBUG("RDX is " << hex << return_struct.rdx);
+      DEBUG("RDX is " << int_to_hex(return_struct.rdx));
     }
 
     if(return_struct.flag & 0b00000100) {
@@ -305,7 +307,7 @@ void read_returns() {
     exit(2); 
   }
 
-  DEBUG("Setting up jump from " << hex << func_address << " to " << hex << disabled_fn);
+  DEBUG("Setting up jump from " << int_to_hex((uint64_t) func_address) << " to " << int_to_hex((uint64_t) disabled_fn));
   new((void*)func_address)X86Jump((void*)disabled_fn);
 
   DEBUG("Finished reading returns");

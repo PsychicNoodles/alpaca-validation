@@ -356,4 +356,6 @@ uint64_t find_address(const char* file_path, string func_name);
 
 int measure_energy(energy_reading_t* readings, int max);
 
+char* int_to_hex(uint64_t i);
+
 #endif

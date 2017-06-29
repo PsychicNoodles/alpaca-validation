@@ -32,7 +32,7 @@
 #define MAX_OPERANDS 126
 #define NUM_RET_REGS 4
 
-#define MAX_WRITE_SYSCALL_COUNT 1024
+#define MAX_WRITE_SYSCALL_COUNT 1024 * 1024 * 1024
 
 using namespace std;
 
@@ -73,7 +73,7 @@ void log_sys_ret(uint64_t ret_value_reg);
  * func_address: (virtual) address of the function in memory
  */
 void single_step(uint64_t func_address) {
-  DEBUG("Enabling single step for the function at " << hex << func_address);
+  DEBUG("Enabling single step for the function at " << int_to_hex(func_address));
   uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
 
   DEBUG("Making the start of the page readable, writable, and executable");
@@ -98,6 +98,7 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
   DEBUG("Finding the destination of instruction");
   int64_t offset; //displacement offset
 
+  DEBUG("Size of offset: " << (int) op->offset << ", base register: " << op->base << ", index register: " << op->index);
   switch(op->offset) {
   case 8:
     DEBUG("Instruction offset is 8 bits");
@@ -116,14 +117,14 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
     offset = (int64_t) op->lval.sqword;
     break;
   default:
-    DEBUG("Could not determine instruction offset size!");
+    DEBUG("Irregular offset size (" << (int) op->offset << ")!");
     offset = 0;
   }
 
   size_t base = get_register(op->base, context);
   size_t index = get_register(op->index, context);
   uint8_t scale = op->scale;
-  DEBUG("Offset: " << hex << offset << ", base: " << hex << base << ", index: " << index << ", scale: " << scale);
+  DEBUG("Offset: " << int_to_hex(offset) << ", base: " << int_to_hex(base) << ", index: " << index << ", scale: " << (int) scale);
   DEBUG("Finished finding destination: " << (uint64_t) (offset + base + (index * scale)));
   //calculating the memory address based on assembly register information 
   return (uint64_t) (offset + base + (index * scale)); 
@@ -149,7 +150,7 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
   
   if (is_mem_opr) {
     uint64_t mem_address = find_destination(op, context);
-    DEBUG("Found the destination memory address " << hex << mem_address);
+    DEBUG("Found the destination memory address " << int_to_hex(mem_address));
     
     if (just_read(mem_address, is_mem_opr, context)) {
       DEBUG("Operand only reads");
@@ -240,11 +241,12 @@ void log_returns(ucontext_t* context) {
     if (ret_regs_touched[i]) {
       if(i < 2) { //integer types
         uint64_t buf = get_register(ret_regs[i], context);
-        DEBUG((i == 0 ? "RAX" : "RDX") << " register value: " << buf);
+        DEBUG((i == 0 ? "RAX" : "RDX") << " register value: " << int_to_hex(buf));
         return_file.write((char*) &buf, 8);
       } else { //floating point types
         float* buf = (float*)get_fp_register(ret_regs[i], context);
-        DEBUG((i == 2 ? "XMM0" : "XMM1") << " register values: " << buf[0] << ", " << buf[1] << ", " << buf[2] << ", " << buf[3]);
+        DEBUG((i == 2 ? "XMM0" : "XMM1") << " register values: " << int_to_hex(buf[0])
+              << ", " << int_to_hex(buf[1]) << ", " << int_to_hex(buf[2]) << ", " << int_to_hex(buf[3]));
         for (int j = 0; j < 4; j++)
           return_file.write((char*) &buf[j], sizeof(float));
                                 
@@ -319,7 +321,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   }  else {
     non_regular_start = true;
     first_run = false;
-    DEBUG("Function starting byte is irregular: " << hex << func_start_byte);
+    DEBUG("Function starting byte is irregular: " << int_to_hex(func_start_byte));
     ((uint8_t*)func_address)[0] = func_start_byte; //putting the original byte back
                     
     initialize_ud(&ud_obj);
@@ -349,6 +351,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       DEBUG("Enabling single step once the target function is called again");
       single_step(func_address);
 
+      DEBUG("There were " << write_syscall_count << " writes/syscalls");
+      
       DEBUG("Resetting static variables");
       // reset for next time target function is called
       non_regular_start = false; 
@@ -456,7 +460,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 }
 
 void log_write(uint64_t dest_address) {
-  DEBUG("Logging a write to " << hex << dest_address << ", write/syscall count is now " << write_syscall_count + 1);
+  DEBUG("Logging a write to " << int_to_hex(dest_address) << ", write/syscall count is now " << write_syscall_count + 1);
   if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
     cerr << "Overflowing write/syscall flag array!\n";
     exit(2);
@@ -466,7 +470,7 @@ void log_write(uint64_t dest_address) {
   DEBUG("Dereferencing destination address");
   uint64_t val = *((uint64_t*)dest_address);
 
-  DEBUG("Write " << val << " to " << hex << dest_address);
+  DEBUG("Write " << val << " to " << int_to_hex(dest_address));
         
   write_file.write((char*) &dest_address, sizeof(uint64_t));
   write_file.write((char*) &val, sizeof(uint64_t));
@@ -523,7 +527,7 @@ bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
     // -128 = red zone
     uint64_t stack_ptr = context->uc_mcontext.gregs[REG_RSP] - 128;
 
-    DEBUG("The stack frame is " << hex << stack_base << " to " << hex << stack_ptr);
+    DEBUG("The stack frame is " << int_to_hex((uint64_t) stack_base) << " to " << int_to_hex(stack_ptr));
 
     DEBUG("Finished determining if instruction is readonly: " << ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address));
     return ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address); 

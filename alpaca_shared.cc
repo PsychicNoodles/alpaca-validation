@@ -3,6 +3,8 @@
 #include "alpaca_no2.hh"
 #include "alpaca_fn_disabler.hh"
 
+#include <iomanip>
+
 uint64_t offset;
 
 uint64_t func_address; //the address of the target function
@@ -35,7 +37,6 @@ void setup_disabler() {
 }
 
 static int wrapped_main(int argc, char** argv, char** env) {
-  cerr.setf(ios::showbase);
   DEBUG("Entered Alpaca's main");
   
   //storing the func_name searched for as the last argument
@@ -242,6 +243,13 @@ int measure_energy(energy_reading_t* readings, int max) {
     }
   }
   return ind;
+}
+
+char* int_to_hex(uint64_t i) {
+  // hacky debug code
+  static char buf[15];
+  snprintf(buf, 15, "%#014lx", i);
+  return buf;
 }
 
 INTERPOSE (exit)(int rc) {
