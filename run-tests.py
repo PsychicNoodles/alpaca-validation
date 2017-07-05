@@ -16,9 +16,12 @@ else:
     pairs = zip(tests, results)
 
 for test, res in pairs:
-    sub = subprocess.Popen([TEST_PROG, test, test + "_func", "analyze"], stdout=PIPE, stderr=PIPE)
+    os.environ["ALPACA_MODE"] = "analyze"
+    os.environ["ALPACA_FUNC"] = test + "_func"
+    sub = subprocess.Popen([TEST_PROG, test], stdout=PIPE, stderr=PIPE)
     sub.communicate()
-    disabler = subprocess.Popen([TEST_PROG, test, test + "_func", "disable"], stdout=PIPE, stderr=PIPE)
+    os.environ["ALPACA_MODE"] = "disable"
+    disabler = subprocess.Popen([TEST_PROG, test], stdout=PIPE, stderr=PIPE)
     outdata, errdata = disabler.communicate()
     if outdata == (res + "\n"):
         print "%s test was successful" % test

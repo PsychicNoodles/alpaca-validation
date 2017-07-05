@@ -40,14 +40,18 @@ static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("Entered Alpaca's main");
   
   //storing the func_name searched for as the last argument
-  string func_name = argv[argc-2];
+  char* alpaca_mode = getenv("ALPACA_MODE");
+  char* func_name = getenv("ALPACA_FUNC"); 
   DEBUG("The target function is " << func_name);
-  argv[argc-2] = NULL;
 
   func_address = find_address("/proc/self/exe", func_name);
+  if (func_address == 0) {
+    DEBUG("Could not find the function address while running the program");
+    return og_main(argc, argv, env);
+  }
   DEBUG("The address of the target function is " << func_address);
     
-  if (strcmp(argv[argc-1], "analyze") == 0) {
+  if (strcmp(alpaca_mode, "analyze") == 0) {
     DEBUG("Analyze mode");
     
     return_file.open("return-logger", OUT_FMODE);
@@ -55,7 +59,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
     sys_file.open("sys-logger", OUT_FMODE);
 
     setup_analyzer();                
-  } else if (strcmp(argv[argc-1], "disable") == 0) {
+  } else if (strcmp(alpaca_mode, "disable") == 0) {
     DEBUG("Disable mode");
     
     return_file.open("return-logger", IN_FMODE);
@@ -68,13 +72,11 @@ static int wrapped_main(int argc, char** argv, char** env) {
     exit(2);
   }
 
-  argc -= 2;
-
   DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
   DEBUG("Starting test program");
-  og_main(argc, argv, env);
+  int main_return = og_main(argc, argv, env);
   DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
   int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
@@ -88,7 +90,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   write_file.close();
   sys_file.close();
 
-  return 0; 
+  return main_return; 
 }
 
 void shut_down() {

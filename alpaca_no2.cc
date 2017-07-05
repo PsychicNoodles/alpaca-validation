@@ -33,6 +33,7 @@
 #define NUM_RET_REGS 4
 
 #define MAX_WRITE_SYSCALL_COUNT 1024 * 1024 * 1024
+#define MAX_WRITE_COUNT 500
 
 using namespace std;
 
@@ -60,13 +61,22 @@ ud_type_t syscall_params[6] = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_R_R8, 
 //function declarations
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context);
-void initialize_ud_obj(ud_t* ud_obj);
+void initialize_ud(ud_t* ud_obj);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
 void log_write(uint64_t dest_address);
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 void log_syscall(uint64_t sys_num, ucontext_t* context);
 void log_sys_ret(uint64_t ret_value_reg);
+
+void initialize_ud(ud_t* ud_obj) {
+  DEBUG("Initializing the udis86 object");
+  ud_init(ud_obj);
+  ud_set_mode(ud_obj, 64);
+  ud_set_syntax(ud_obj, UD_SYN_ATT);
+  ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
+  DEBUG("Finished initializing the udis86 object");
+}
 
 /**
  * Enables single-stepping (instruction by instruction) through the function
@@ -125,7 +135,7 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
   size_t index = get_register(op->index, context);
   uint8_t scale = op->scale;
   DEBUG("Offset: " << int_to_hex(offset) << ", base: " << int_to_hex(base) << ", index: " << index << ", scale: " << (int) scale);
-  DEBUG("Finished finding destination: " << (uint64_t) (offset + base + (index * scale)));
+  DEBUG("Finished finding destination: " << int_to_hex((uint64_t) (offset + base + (index * scale))));
   //calculating the memory address based on assembly register information 
   return (uint64_t) (offset + base + (index * scale)); 
 }
@@ -157,6 +167,7 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
     }
     else {
       DEBUG("Operand may write, saving the destination address");
+      DEBUG("Address is " << mem_address << ", asm is " << ud_insn_asm(obj));
       mem_writing = mem_address;
     }
     if (op->base == UD_R_RIP) {
@@ -191,20 +202,6 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
 
   DEBUG("Finished testing operand");
 }
-
-
-
-
-void initialize_ud(ud_t* ud_obj) {
-  DEBUG("Initializing the udis86 object");
-  ud_init(ud_obj);
-  ud_set_mode(ud_obj, 64);
-  ud_set_syntax(ud_obj, UD_SYN_ATT);
-  ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
-  DEBUG("Finished initializing the udis86 object");
-}
-
-
 
 void log_returns(ucontext_t* context) {
   DEBUG("Logging returns");
@@ -281,11 +278,17 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   static ud_t ud_obj;
   static bool non_regular_start = false;
   static bool waiting_syscall = false;
-
+  static int write_count = 0; 
 
   //logging writes
   if (mem_writing != 0) {
-    DEBUG("Last instruction was a memory write to address: " << mem_writing);
+    if (write_count > MAX_WRITE_COUNT) {
+      cerr << "maximum write count reached!\n";
+      exit(2);
+    }
+    
+    write_count++;
+    DEBUG("Last instruction was a memory write to address: " << int_to_hex(mem_writing));
     log_write(mem_writing);
     mem_writing = 0;
   }
@@ -359,7 +362,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       first_run = true;
       call_count = 0;
       write_syscall_count = 0;
-      memset(ret_regs_touched, false, NUM_RET_REGS); 
+      memset(ret_regs_touched, false, NUM_RET_REGS);
+      write_count = 0;
 
       return;
     }
@@ -479,7 +483,7 @@ void log_write(uint64_t dest_address) {
 }
 
 void log_syscall(uint64_t sys_num, ucontext_t* context) {
-  DEBUG("Logging syscall (" << sys_num << ")");
+  DEBUG("Logging syscall (" << sys_num << "), write/syscall count is now " << write_syscall_count + 1);
   if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
     cerr << "Overflowing write/syscall flag array!\n";
     exit(2);
