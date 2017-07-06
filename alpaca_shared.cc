@@ -41,15 +41,16 @@ static int wrapped_main(int argc, char** argv, char** env) {
   
   //storing the func_name searched for as the last argument
   char* alpaca_mode = getenv("ALPACA_MODE");
-  char* func_name = getenv("ALPACA_FUNC"); 
+  char* func_name = getenv("ALPACA_FUNC");
+  DEBUG("The mode is " << alpaca_mode);
   DEBUG("The target function is " << func_name);
 
   func_address = find_address("/proc/self/exe", func_name);
   if (func_address == 0) {
-    DEBUG("Could not find the function address while running the program");
+    DEBUG("Could not find the function address, running it normally");
     return og_main(argc, argv, env);
   }
-  DEBUG("The address of the target function is " << func_address);
+  DEBUG("The address of the target function is " << int_to_hex(func_address));
     
   if (strcmp(alpaca_mode, "analyze") == 0) {
     DEBUG("Analyze mode");

@@ -37,12 +37,15 @@
 using namespace std;
 
 //debug macro
-#ifndef NDEBUG
-#define DEBUG(x) do { clog << x << "\n"; } while(0)
-#define DEBUG_C(fmt, ...) do { fprintf(stderr, fmt, __VA_ARGS__); } while (0)
-#else
+#if defined(NDEBUG)
 #define DEBUG(x)
-#define DEBUG_C(fmt, ...)
+#define DEBUG_CRITICAL(x)
+#elif defined(MINDEBUG)
+#define DEBUG(x)
+#define DEBUG_CRITICAL(x) do { clog << x << "\n"; } while(0)
+#else
+#define DEBUG(x) do { clog << x << "\n"; } while(0)
+#define DEBUG_CRITICAL(x) do { clog << x << "\n"; } while(0)
 #endif
 
 typedef struct {

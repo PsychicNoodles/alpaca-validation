@@ -47,7 +47,7 @@ uint64_t write_syscall_count;
 bool write_syscall_flag[MAX_WRITE_SYSCALL_COUNT];
 
 //the byte overwrtitten with 0xCC for single-stepping
-uint8_t func_start_byte;
+uint8_t start_byte;
 
 //registers where the return values are stored 
 ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
@@ -82,9 +82,9 @@ void initialize_ud(ud_t* ud_obj) {
  * Enables single-stepping (instruction by instruction) through the function
  * func_address: (virtual) address of the function in memory
  */
-void single_step(uint64_t func_address) {
-  DEBUG("Enabling single step for the function at " << int_to_hex(func_address));
-  uint64_t page_start = func_address & ~(PAGE_SIZE-1) ;
+void single_step(uint64_t address) {
+  DEBUG("Enabling single step for the function at " << int_to_hex(address));
+  uint64_t page_start = address & ~(PAGE_SIZE-1) ;
 
   DEBUG("Making the start of the page readable, writable, and executable");
   //making the page writable, readable and executable
@@ -95,8 +95,9 @@ void single_step(uint64_t func_address) {
 
   DEBUG("Setting the first byte to 0xCC");
   //setting the first byte to 0xCC causes a SIGTRAP signal for single-stepping
-  func_start_byte = ((uint8_t*)func_address)[0];
-  ((uint8_t*)func_address)[0] = 0xCC;
+  start_byte = ((uint8_t*)address)[0];
+  DEBUG("Stored the original starting byte: " << int_to_hex(start_byte));
+  ((uint8_t*)address)[0] = 0xCC;
   DEBUG("Finished enabling single step");
 }
 
@@ -278,7 +279,10 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   static ud_t ud_obj;
   static bool non_regular_start = false;
   static bool waiting_syscall = false;
-  static int write_count = 0; 
+  static int write_count = 0;
+  static uint8_t* instr_first_byte = (uint8_t*)func_address; 
+  
+  uint64_t* rsp;
 
   //logging writes
   if (mem_writing != 0) {
@@ -302,9 +306,11 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     waiting_syscall = false;
   }
 
-  if (func_start_byte == 0x55) {
-    DEBUG("Function starting byte is 0x55");
+  if (start_byte == 0x55) {
     if (first_run) {
+      DEBUG_CRITICAL("Target function called");
+      
+      DEBUG("Function starting byte is 0x55");
       DEBUG("Initializing stack base");
       //Faking the %rbp stack push to account for the 0xCC byte overwrite
       stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
@@ -319,20 +325,30 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       initialize_ud(&ud_obj);
 
       first_run = false;
-      ((uint8_t*)func_address)[0] = func_start_byte;
-    }      
+      instr_first_byte[0] = start_byte;
+    }
   }  else {
     non_regular_start = true;
-    first_run = false;
-    DEBUG("Function starting byte is irregular: " << int_to_hex(func_start_byte));
-    ((uint8_t*)func_address)[0] = func_start_byte; //putting the original byte back
-                    
-    initialize_ud(&ud_obj);
-  }
+    DEBUG("Function starting byte is irregular: " << int_to_hex(start_byte));
+    
+    
+    if (first_run) {
+      DEBUG_CRITICAL("Target function called");
+      
+      DEBUG("Subtracted RIP with value " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << " to account for the 0xCC overwrite");
 
-  //grabs next instruction to disassemble 
-  ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
-  ud_disassemble(&ud_obj);
+      stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
+      DEBUG("Stack base is " << int_to_hex((uint64_t) stack_base));
+    
+      initialize_ud(&ud_obj);
+      first_run = false;
+    }
+  
+    instr_first_byte[0] = start_byte; //save the original byte
+    context->uc_mcontext.gregs[REG_RIP]--; //rerun the current instruction 
+  }
+ 
+
 
   //if end of a function is reached in the next step  
   if (return_reached) {
@@ -365,15 +381,26 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       memset(ret_regs_touched, false, NUM_RET_REGS);
       write_count = 0;
 
+      DEBUG("Finished resetting static variables");
+
       return;
     }
   }
+
+  DEBUG("Setting input buffer");
+  //grabs next instruction to disassemble 
+  ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
+  DEBUG("Input set, disassembling");
+  ud_disassemble(&ud_obj);
+  DEBUG("Instruction disassembled");
 
   DEBUG("Instruction: " << ud_insn_asm(&ud_obj));
 
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
     DEBUG("Special case: ret (call count is " << call_count << ")");
+    rsp = (uint64_t*) context->uc_mcontext.gregs[REG_RSP];
+    DEBUG("Will return to " << int_to_hex(*rsp) << " (" << int_to_hex((uint64_t) rsp) << ")");
     return_reached = true;
     break;
 
@@ -452,8 +479,12 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
   if (non_regular_start) {
     DEBUG("Irregular start, so attempting to single step at the RIP");
-    non_regular_start = false; 
-    single_step(context->uc_mcontext.gregs[REG_RIP]); 
+    non_regular_start = false;
+
+    //moving the pointer to the current instruction, and
+    //setting the trap to next instruction accordingly 
+    instr_first_byte = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP]+2);
+    single_step(context->uc_mcontext.gregs[REG_RIP]+2); 
   } else {
     DEBUG("Continuing to single step");
     //set TRAP flag to continue single-stepping
