@@ -168,7 +168,7 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
     }
     else {
       DEBUG("Operand may write, saving the destination address");
-      DEBUG("Address is " << mem_address << ", asm is " << ud_insn_asm(obj));
+      DEBUG("Address is " << int_to_hex(mem_address) << ", asm is " << ud_insn_asm(obj));
       mem_writing = mem_address;
     }
     if (op->base == UD_R_RIP) {
