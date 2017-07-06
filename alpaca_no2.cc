@@ -50,13 +50,13 @@ bool write_syscall_flag[MAX_WRITE_SYSCALL_COUNT];
 uint8_t start_byte;
 
 //registers where the return values are stored 
-ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
-ud_type_t rax_regs[5] = {UD_R_RAX, UD_R_EAX, UD_R_AX, UD_R_AH, UD_R_AL};
-ud_type_t rdx_regs[5] = {UD_R_RDX, UD_R_EDX, UD_R_DX, UD_R_DH, UD_R_DL};
+const ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
+const ud_type_t rax_regs[5] = {UD_R_RAX, UD_R_EAX, UD_R_AX, UD_R_AH, UD_R_AL};
+const ud_type_t rdx_regs[5] = {UD_R_RDX, UD_R_EDX, UD_R_DX, UD_R_DH, UD_R_DL};
 bool ret_regs_touched[NUM_RET_REGS] = {false};
 
 //the registers where the parameters of a syscall instruction are stored
-ud_type_t syscall_params[6] = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_R_R8, UD_R_R9};
+const ud_type_t syscall_params[6] = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_R_R8, UD_R_R9};
 
 //function declarations
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
@@ -235,7 +235,7 @@ void log_returns(ucontext_t* context) {
 
   DEBUG("Logging return registers");
   //logging the return registers
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < NUM_RET_REGS; i++) {
     if (ret_regs_touched[i]) {
       if(i < 2) { //integer types
         uint64_t buf = get_register(ret_regs[i], context);
@@ -339,13 +339,14 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
       stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
       DEBUG("Stack base is " << int_to_hex((uint64_t) stack_base));
-    
+
+      instr_first_byte[0] = start_byte; //save the original byte
+      DEBUG("Restoring " << int_to_hex(start_byte) << " to first byte " << int_to_hex((uint64_t) instr_first_byte));
+      context->uc_mcontext.gregs[REG_RIP]--; //rerun the current instruction 
+      
       initialize_ud(&ud_obj);
       first_run = false;
     }
-  
-    instr_first_byte[0] = start_byte; //save the original byte
-    context->uc_mcontext.gregs[REG_RIP]--; //rerun the current instruction 
   }
  
 
@@ -361,11 +362,9 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       
       log_returns(context);
 
-      if (!non_regular_start) {
-        DEBUG("Stopping single stepping");
-        //stops single-stepping
-        context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
-      }
+      DEBUG("Stopping single stepping");
+      //stops single-stepping
+      context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
 
       DEBUG("Enabling single step once the target function is called again");
       single_step(func_address);
@@ -394,7 +393,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   ud_disassemble(&ud_obj);
   DEBUG("Instruction disassembled");
 
-  DEBUG("Instruction: " << ud_insn_asm(&ud_obj));
+  DEBUG("Instruction at " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << ": " << ud_insn_asm(&ud_obj));
 
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
@@ -477,19 +476,9 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     break;
   }
 
-  if (non_regular_start) {
-    DEBUG("Irregular start, so attempting to single step at the RIP");
-    non_regular_start = false;
-
-    //moving the pointer to the current instruction, and
-    //setting the trap to next instruction accordingly 
-    instr_first_byte = (uint8_t*)(context->uc_mcontext.gregs[REG_RIP]+2);
-    single_step(context->uc_mcontext.gregs[REG_RIP]+2); 
-  } else {
-    DEBUG("Continuing to single step");
-    //set TRAP flag to continue single-stepping
-    context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
-  }
+  DEBUG("Continuing to single step");
+  //set TRAP flag to continue single-stepping
+  context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
 
   DEBUG("Finished trap handler");
 }
