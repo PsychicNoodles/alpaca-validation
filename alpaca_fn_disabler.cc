@@ -59,7 +59,7 @@ void disabled_fn() {
   DEBUG("Entering disabled function");
   
   if (write_syscall_counts_index > write_syscall_counts_filled) {
-    cerr << "Overflowing write/syscall counts array!\n";
+    cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
     exit(2);
   }
   DEBUG("Popping a write/syscall count");
@@ -92,7 +92,7 @@ void disabled_fn() {
   }
   DEBUG("Popping a return registers struct");
   ret_t curr_return = returns[returns_index++];
-  DEBUG("Return registers flag: " << curr_return.flag);
+  DEBUG("Return registers flag: " << (int)curr_return.flag);
   
   if(curr_return.flag & 0b00001000) { DEBUG("XMM1: " << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
                                             << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])); }

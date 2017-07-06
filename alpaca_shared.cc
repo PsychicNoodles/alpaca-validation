@@ -36,6 +36,24 @@ void setup_disabler() {
   read_returns();
 }
 
+void open_logs(fstream::openmode mode) {
+  return_file.open("return-logger", mode);
+  if(return_file.fail()) {
+    cerr << "Error opening return log: " << strerror(errno);
+    exit(4);
+  }
+  write_file.open("write-logger", mode);
+  if(write_file.fail()) {
+    cerr << "Error opening write log: " << strerror(errno);
+    exit(4);
+  }
+  sys_file.open("sys-logger", mode);
+  if(sys_file.fail()) {
+    cerr << "Error opening sys log: " << strerror(errno);
+    exit(4);
+  }
+}
+
 static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("Entered Alpaca's main");
   
@@ -55,17 +73,13 @@ static int wrapped_main(int argc, char** argv, char** env) {
   if (strcmp(alpaca_mode, "analyze") == 0) {
     DEBUG("Analyze mode");
     
-    return_file.open("return-logger", OUT_FMODE);
-    write_file.open("write-logger", OUT_FMODE);
-    sys_file.open("sys-logger", OUT_FMODE);
+    open_logs(OUT_FMODE);
 
     setup_analyzer();                
   } else if (strcmp(alpaca_mode, "disable") == 0) {
     DEBUG("Disable mode");
     
-    return_file.open("return-logger", IN_FMODE);
-    write_file.open("write-logger", IN_FMODE);
-    sys_file.open("sys-logger", IN_FMODE);
+    open_logs(IN_FMODE);
 
     setup_disabler();
   } else {
