@@ -33,7 +33,7 @@
 #define NUM_RET_REGS 4
 
 #define MAX_WRITE_SYSCALL_COUNT 1024 * 1024 * 1024
-#define MAX_WRITE_COUNT 500
+#define MAX_WRITE_COUNT 100000
 
 using namespace std;
 
@@ -216,10 +216,12 @@ void log_returns(ucontext_t* context) {
   for(int i = 0; i < (write_syscall_count / 8) + 1; i++) {
     flag_byte.reset(); 
     for(int j = 0; j < 8 && j + i * 8 < write_syscall_count; j++) {
+            DEBUG("Write/syscall bool array value: " << write_syscall_flag[i*8 + j] << " at index " << (i*8 + j) << "(i is " << i << ")");
       if(write_syscall_flag[i * 8 + j]) {
         flag_byte.set(j, true);
       }
     }
+   
     DEBUG("Write/syscall flag byte: " << flag_byte);
     return_file.write((char*)&flag_byte, 1);
   }
@@ -280,7 +282,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   static bool non_regular_start = false;
   static bool waiting_syscall = false;
   static int write_count = 0;
-  static uint8_t* instr_first_byte = (uint8_t*)func_address; 
+  static uint8_t* instr_first_byte = (uint8_t*)func_address;
+  static unsigned int function_start_counter = 0;
   
   uint64_t* rsp;
 
@@ -308,7 +311,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
   if (start_byte == 0x55) {
     if (first_run) {
-      DEBUG_CRITICAL("Target function called");
+      DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
       
       DEBUG("Function starting byte is 0x55");
       DEBUG("Initializing stack base");
@@ -333,7 +336,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     
     
     if (first_run) {
-      DEBUG_CRITICAL("Target function called");
+      DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
       
       DEBUG("Subtracted RIP with value " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << " to account for the 0xCC overwrite");
 
@@ -358,7 +361,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     return_reached = false;
 
     if(call_count < 0) {
-      DEBUG("The target function has returned");
+      DEBUG_CRITICAL("The target function has returned");
       
       log_returns(context);
 
@@ -503,7 +506,7 @@ void log_write(uint64_t dest_address) {
 }
 
 void log_syscall(uint64_t sys_num, ucontext_t* context) {
-  DEBUG("Logging syscall (" << sys_num << "), write/syscall count is now " << write_syscall_count + 1);
+  DEBUG("Logging a syscall (" << sys_num << "), write/syscall count is now " << write_syscall_count + 1);
   if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
     cerr << "Overflowing write/syscall flag array!\n";
     exit(2);

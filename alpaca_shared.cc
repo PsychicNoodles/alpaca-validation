@@ -90,7 +90,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
-  DEBUG("Starting test program");
+  cerr << "Starting target program\n";
   int main_return = og_main(argc, argv, env);
   DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
@@ -270,17 +270,17 @@ char* int_to_hex(uint64_t i) {
 }
 
 INTERPOSE (exit)(int rc) {
-  shut_down();
+  cerr << "Program exited through exit() function\n";
   real::exit(rc);
 }
 
 INTERPOSE (_exit)(int rc) {
-  shut_down();
+  cerr << "Program exited through _exit() function\n";
   real::_exit(rc); 
 }
 
 INTERPOSE (_Exit)(int rc) {
-  shut_down();
+  cerr << "Program exited through _Exit() function\n";
   real::_Exit(rc); 
 }
 

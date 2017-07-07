@@ -30,9 +30,9 @@
 #define ENERGY_FILE "energy_uj"
 #define ENERGY_LINE_CAPACITY 1024
 
-#define MAX_RETURNS 4096
-#define MAX_WRITES 4096
-#define MAX_SYSCALLS 4096
+#define MAX_RETURNS 100000
+#define MAX_WRITES 100000000
+#define MAX_SYSCALLS 10000000
 
 using namespace std;
 

@@ -250,7 +250,7 @@ void read_returns() {
       return_file.read((char*) &buf, sizeof(uint8_t));
 
       bitset<8> byte(buf); 
-      for (int j = 0; j < 8; j++) {
+      for (int j = 0; j < 8 && j + i * 8 < write_sys_count; j++) {
         if (flags_filled >= (MAX_RETURNS + MAX_SYSCALLS)) {
           cerr << "Overflowing write/syscall flag array!\n";
           exit(2);
@@ -263,7 +263,7 @@ void read_returns() {
     ret_t return_struct;
     DEBUG("Reading return registers flag");
     return_file.read((char*) &return_struct.flag, 1);
-    DEBUG("Flag is: " << return_struct.flag);
+    DEBUG("Flag is: " << (int)return_struct.flag);
 
     if(return_struct.flag & 0b00000001) {
       DEBUG("Reading RAX");
