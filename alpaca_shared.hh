@@ -12,6 +12,7 @@
 #include <link.h>
 #include <unistd.h>
 
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <dirent.h>
 
@@ -33,6 +34,8 @@
 #define MAX_RETURNS 100000
 #define MAX_WRITES 100000000
 #define MAX_SYSCALLS 10000000
+
+#define PAGE_SIZE 4096
 
 using namespace std;
 
@@ -349,6 +352,9 @@ extern uint64_t func_address; //the address of the target function
 extern fstream return_file;
 extern fstream write_file;
 extern fstream sys_file;
+extern fstream ret_addr_file;
+
+extern uint8_t start_byte; // used in analyzer
 
 /**
  * Locates the address of the target function
@@ -360,5 +366,7 @@ uint64_t find_address(const char* file_path, string func_name);
 int measure_energy(energy_reading_t* readings, int max);
 
 char* int_to_hex(uint64_t i);
+
+uint8_t single_step(uint64_t address);
 
 #endif

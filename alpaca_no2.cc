@@ -21,19 +21,17 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
 #include <ucontext.h>
 #include <unistd.h>
 
-#define PAGE_SIZE 4096
 #define MAX_OPERANDS 126
 #define NUM_RET_REGS 4
 
 #define MAX_WRITE_SYSCALL_COUNT 1024 * 1024 * 1024
-#define MAX_WRITE_COUNT 100000
+#define MAX_WRITE_COUNT 100000000
 
 using namespace std;
 
@@ -45,9 +43,6 @@ uint64_t write_syscall_count;
 
 //true for write, false for syscall
 bool write_syscall_flag[MAX_WRITE_SYSCALL_COUNT];
-
-//the byte overwrtitten with 0xCC for single-stepping
-uint8_t start_byte;
 
 //registers where the return values are stored 
 const ud_type_t ret_regs[NUM_RET_REGS] = {UD_R_RAX, UD_R_RDX, UD_R_XMM0, UD_R_XMM1};
@@ -76,29 +71,6 @@ void initialize_ud(ud_t* ud_obj) {
   ud_set_syntax(ud_obj, UD_SYN_ATT);
   ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
   DEBUG("Finished initializing the udis86 object");
-}
-
-/**
- * Enables single-stepping (instruction by instruction) through the function
- * func_address: (virtual) address of the function in memory
- */
-void single_step(uint64_t address) {
-  DEBUG("Enabling single step for the function at " << int_to_hex(address));
-  uint64_t page_start = address & ~(PAGE_SIZE-1) ;
-
-  DEBUG("Making the start of the page readable, writable, and executable");
-  //making the page writable, readable and executable
-  if (mprotect((void*) page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) == -1) {
-    cerr << "mprotect failed: " << strerror(errno) << "\n";
-    exit(2); 
-  }
-
-  DEBUG("Setting the first byte to 0xCC");
-  //setting the first byte to 0xCC causes a SIGTRAP signal for single-stepping
-  start_byte = ((uint8_t*)address)[0];
-  DEBUG("Stored the original starting byte: " << int_to_hex(start_byte));
-  ((uint8_t*)address)[0] = 0xCC;
-  DEBUG("Finished enabling single step");
 }
 
 
@@ -216,7 +188,7 @@ void log_returns(ucontext_t* context) {
   for(int i = 0; i < (write_syscall_count / 8) + 1; i++) {
     flag_byte.reset(); 
     for(int j = 0; j < 8 && j + i * 8 < write_syscall_count; j++) {
-            DEBUG("Write/syscall bool array value: " << write_syscall_flag[i*8 + j] << " at index " << (i*8 + j) << "(i is " << i << ")");
+            DEBUG("Write/syscall bool array value: " << write_syscall_flag[i*8 + j] << " at index " << (i*8 + j) << " (i is " << i << ")");
       if(write_syscall_flag[i * 8 + j]) {
         flag_byte.set(j, true);
       }
@@ -257,7 +229,11 @@ void log_returns(ucontext_t* context) {
   DEBUG("Finished logging returns");
 }
 
-
+//ret addr logging
+void log_ret_addrs(uint64_t addr) {
+    DEBUG("Logging return address: " << int_to_hex(addr));
+    ret_addr_file.write((char*)&addr, sizeof(uint64_t));
+}
 
 /**
  * Initially catches the SIGTRAP signal cause by INT3(0xCC) followed by catching a TRAP FLAG
@@ -284,6 +260,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   static int write_count = 0;
   static uint8_t* instr_first_byte = (uint8_t*)func_address;
   static unsigned int function_start_counter = 0;
+  static uint64_t ret_addr = 0; //ret addr logging 
   
   uint64_t* rsp;
 
@@ -312,6 +289,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   if (start_byte == 0x55) {
     if (first_run) {
       DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
+      cerr << "Testing malloc: " << int_to_hex((uint64_t) malloc(1024)) << "\n";
+
       
       DEBUG("Function starting byte is 0x55");
       DEBUG("Initializing stack base");
@@ -337,6 +316,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     
     if (first_run) {
       DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
+      cerr << "Testing malloc: " << int_to_hex((uint64_t) malloc(1024)) << "\n";
       
       DEBUG("Subtracted RIP with value " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << " to account for the 0xCC overwrite");
 
@@ -349,6 +329,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       
       initialize_ud(&ud_obj);
       first_run = false;
+
     }
   }
  
@@ -364,13 +345,14 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       DEBUG_CRITICAL("The target function has returned");
       
       log_returns(context);
-
+      log_ret_addrs(ret_addr); //ret addr logging
+      
       DEBUG("Stopping single stepping");
       //stops single-stepping
       context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
 
       DEBUG("Enabling single step once the target function is called again");
-      single_step(func_address);
+      start_byte = single_step(func_address);
 
       DEBUG("There were " << write_syscall_count << " writes/syscalls");
       
@@ -401,6 +383,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
     DEBUG("Special case: ret (call count is " << call_count << ")");
+    ret_addr = context->uc_mcontext.gregs[REG_RIP]; //ret addr logging
     rsp = (uint64_t*) context->uc_mcontext.gregs[REG_RSP];
     DEBUG("Will return to " << int_to_hex(*rsp) << " (" << int_to_hex((uint64_t) rsp) << ")");
     return_reached = true;
@@ -437,7 +420,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     test_operand(&ud_obj, 0, context);
     break;
     //readonly 2 operand instructions
-  case UD_Ilea: case UD_Icmp:
+  case UD_Ilea: case UD_Icmp: case UD_Itest:
     DEBUG("Known readonly 2 op instruction");
     break;
     //known potential writes with 2 operands
@@ -446,7 +429,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     test_operand(&ud_obj, 0, context);
     break;
     //readonly 3 operand instructions
-  case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw:
+  case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw: case UD_Ishufps:
     DEBUG("Known readonly 3 op instruction");
     break;
     //syscall calls
@@ -462,8 +445,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     do {
       if ((op = (ud_operand_t*) ud_insn_opr(&ud_obj, i)) != NULL) {
         if (i > 1) {
-          cerr << "3-operand instructions not supported yet\n";
-          exit(2);
+          cerr << "3-operand instruction: " << ud_insn_asm(&ud_obj) << "\n";
         }
         i++;
       }
@@ -500,6 +482,7 @@ void log_write(uint64_t dest_address) {
   DEBUG("Write " << val << " to " << int_to_hex(dest_address));
         
   write_file.write((char*) &dest_address, sizeof(uint64_t));
+  DEBUG("Dest addr is " << int_to_hex(dest_address));
   write_file.write((char*) &val, sizeof(uint64_t));
 
   DEBUG("Finished logging a write");

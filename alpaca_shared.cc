@@ -12,12 +12,40 @@ uint64_t func_address; //the address of the target function
 fstream return_file;
 fstream write_file;
 fstream sys_file;
+fstream ret_addr_file;
+
+//the byte overwrtitten with 0xCC for single-stepping, used in analyzer
+uint8_t start_byte;
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 #define OUT_FMODE fstream::out | fstream::trunc | fstream::binary
 #define IN_FMODE fstream::in | fstream::binary
+
+/**
+ * Enables single-stepping (instruction by instruction) through the function
+ * func_address: (virtual) address of the function in memory
+ */
+uint8_t single_step(uint64_t address) {
+  DEBUG("Enabling single step for the function at " << int_to_hex(address));
+  uint64_t page_start = address & ~(PAGE_SIZE-1) ;
+
+  DEBUG("Making the start of the page readable, writable, and executable");
+  //making the page writable, readable and executable
+  if (mprotect((void*) page_start, PAGE_SIZE, PROT_READ | PROT_WRITE | PROT_EXEC) == -1) {
+    cerr << "mprotect failed: " << strerror(errno) << "\n";
+    exit(2); 
+  }
+
+  DEBUG("Setting the first byte to 0xCC");
+  //setting the first byte to 0xCC causes a SIGTRAP signal for single-stepping
+  uint8_t start_byte = ((uint8_t*)address)[0];
+  DEBUG("The original starting byte: " << int_to_hex(start_byte));
+  ((uint8_t*)address)[0] = 0xCC;
+  DEBUG("Finished enabling single step");
+  return start_byte;
+}
 
 void setup_analyzer() {
   struct sigaction sig_action, debugger;
@@ -27,13 +55,21 @@ void setup_analyzer() {
   sig_action.sa_flags = SA_SIGINFO;
   sigaction(SIGTRAP, &sig_action, 0);
 
-  single_step(func_address);
+  start_byte = single_step(func_address);
 }
 
 void setup_disabler() {
   read_syscalls();
   read_writes();
   read_returns();
+  setup_disabler_jump();
+}
+
+void setup_check() {
+  read_syscalls();
+  read_writes();
+  read_returns();
+  read_ret_addrs();
 }
 
 void open_logs(fstream::openmode mode) {
@@ -52,16 +88,34 @@ void open_logs(fstream::openmode mode) {
     cerr << "Error opening sys log: " << strerror(errno);
     exit(4);
   }
+  ret_addr_file.open("ret_addr-logger", mode);
+  if(ret_addr_file.fail()) {
+    cerr << "Error opening ret_addr log: " << strerror(errno);
+    exit(4);
+  }
+  
+}
+
+void check_self_maps() {
+  char self_maps[1024*1024] = {0};
+  ifstream self_maps_f("/proc/self/maps");
+  self_maps_f.read(self_maps, 1024*1024);
+  self_maps_f.close();
+  cerr << self_maps << "\n";
 }
 
 static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("Entered Alpaca's main");
   
   //storing the func_name searched for as the last argument
-  char* alpaca_mode = getenv("ALPACA_MODE");
-  char* func_name = getenv("ALPACA_FUNC");
+  char alpaca_mode[256], func_name[256];
+
+  strcpy(alpaca_mode, getenv("ALPACA_MODE"));
+  strcpy(func_name, getenv("ALPACA_FUNC"));
   DEBUG("The mode is " << alpaca_mode);
   DEBUG("The target function is " << func_name);
+
+  check_self_maps();
 
   func_address = find_address("/proc/self/exe", func_name);
   if (func_address == 0) {
@@ -82,16 +136,25 @@ static int wrapped_main(int argc, char** argv, char** env) {
     open_logs(IN_FMODE);
 
     setup_disabler();
+  } else if (strcmp(alpaca_mode, "check") == 0) {
+    DEBUG("Check mode");
+
+    open_logs(IN_FMODE);
+
+    setup_check();
   } else {
     cerr << "Unknown mode!\n";
     exit(2);
   }
 
+  /**
   DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
   cerr << "Starting target program\n";
+  **/
   int main_return = og_main(argc, argv, env);
+  /**
   DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
   int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
@@ -100,10 +163,14 @@ static int wrapped_main(int argc, char** argv, char** env) {
   for(int i = 0; i < end_readings_num; i++) {
     cerr << end_readings[i].zone << ": " << dec << end_readings[i].energy - start_readings[i].energy << "\n";
   }
-        
+  **/
+
+  check_self_maps();
+  
   return_file.close();
   write_file.close();
   sys_file.close();
+  ret_addr_file.close(); 
 
   return main_return; 
 }
@@ -141,7 +208,8 @@ uint64_t find_address(const char* file_path, string func_name) {
     exit(2);
   }
 
-  elf::elf f(elf::create_mmap_loader(read_fd));
+  shared_ptr<elf::loader> file_map = elf::create_mmap_loader(read_fd);   
+  elf::elf f(file_map);
   for (auto &sec : f.sections()) {
     if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
 
@@ -166,7 +234,8 @@ uint64_t find_address(const char* file_path, string func_name) {
       addr = offset + d.value; 
     }
   }
-       
+
+  close(read_fd);
   return addr;
   //potential problem with multiple entries in the table for the same function? 
 }
@@ -176,7 +245,7 @@ uint64_t find_address(const char* file_path, string func_name) {
  *@return number of bytes read
  */
 
-int file_readline(char* path, char* contents, int max) {
+int file_readline(char path[], char contents[], int max) {
   memset(contents, 0, max);
   ifstream in(path);
   in.read(contents, max);
@@ -189,15 +258,15 @@ int file_readline(char* path, char* contents, int max) {
  *@return the number of results
  */
 
-int find_in_dir(const char* dir, const char* substr, char* results[], int max) {
+int find_in_dir(const char dir[], const char substr[], char results[][256], int max) {
   int ind = 0;
-  DIR* dirp = opendir(dir);
+  cerr << "Directory being searched: " << dir << "\n"; 
+  DIR* dirp = opendir(dir); //???????????????????????????
   struct dirent* dp;
   while((dp = readdir(dirp)) != NULL && ind < max) {
-    char* path = (char*)malloc(strlen(dp->d_name) + 1);
-    strcpy(path, dp->d_name);
-    if(strstr(path, substr) != NULL) {
-      results[ind++] = path;
+    strcpy(results[ind], dp->d_name);
+    if(strstr(results[ind], substr) != NULL) {
+      ind++;
     }
   }
   closedir(dirp);
@@ -209,16 +278,16 @@ int find_in_dir(const char* dir, const char* substr, char* results[], int max) {
  *@return a struct with the name and the energy usage
  */
 
-energy_reading_t get_energy_info(char* dir) {
+energy_reading_t get_energy_info(char dir[]) {
   // build name file path
-  char* name = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
+  char name[MAX_ENERGY_READING]; 
   size_t ename_len = strlen(dir) + strlen(ENERGY_NAME) + 1;
   char ename[ename_len];
   snprintf(ename, ename_len, "%s%s", dir, ENERGY_NAME);
   file_readline(ename, name, MAX_ENERGY_READING);
   
   // build energy usage file path      
-  char* energy_str = (char*)malloc(sizeof(char)*MAX_ENERGY_READING);
+  char energy_str[MAX_ENERGY_READING];
   size_t efile_len = strlen(dir) + strlen(ENERGY_FILE) + 1;
   char efile[efile_len];
   snprintf(efile, efile_len, "%s%s", dir, ENERGY_FILE);
@@ -236,7 +305,7 @@ energy_reading_t get_energy_info(char* dir) {
 
 int measure_energy(energy_reading_t* readings, int max) {
   int ind = 0;
-  char* powerzones[MAX_POWERZONES];
+  char powerzones[MAX_POWERZONES][256];
   int num_zones = find_in_dir(ENERGY_ROOT, "intel-rapl:", powerzones, MAX_POWERZONES);
   
   for(int i = 0; i < num_zones && ind < max; i++) {
@@ -248,7 +317,7 @@ int measure_energy(energy_reading_t* readings, int max) {
     snprintf(zonedir, zonedir_len, "%s%s/", ENERGY_ROOT, zone);
     readings[ind++] = get_energy_info(zonedir);
     
-    char* subzones[MAX_POWERZONES];
+    char subzones[MAX_POWERZONES][256];
     int num_subzones = find_in_dir(zonedir, zone, subzones, MAX_POWERZONES);
     
     for(int j = 0; j < num_subzones && ind < max; j++) {
@@ -283,6 +352,7 @@ INTERPOSE (_Exit)(int rc) {
   cerr << "Program exited through _Exit() function\n";
   real::_Exit(rc); 
 }
+
 
 /**
  * Intercepts __libc_start_main call to override main of the program calling the analyzer tool

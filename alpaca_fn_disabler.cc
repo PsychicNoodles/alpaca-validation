@@ -27,6 +27,12 @@ typedef struct {
 } ret_t; 
 
 // queues
+
+///return addresses
+uint64_t ret_addrs[MAX_RETURNS];
+size_t ret_addrs_index = 0;
+size_t ret_addrs_filled = 0; 
+
 /// return registers
 ret_t returns[MAX_RETURNS];
 size_t returns_index = 0;
@@ -56,7 +62,9 @@ void mimic_write();
 bool mimic_syscall();
 
 void disabled_fn() {
-  DEBUG("Entering disabled function");
+  DEBUG_CRITICAL("Entering disabled function");
+
+  cerr << "Testing malloc: " << int_to_hex((uint64_t) malloc(1024)) << "\n";
   
   if (write_syscall_counts_index > write_syscall_counts_filled) {
     cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
@@ -101,6 +109,8 @@ void disabled_fn() {
         
   if(curr_return.flag & 0b00000010) { DEBUG("RDX: " << int_to_hex(curr_return.rdx)); }
   if(curr_return.flag & 0b00000001) { DEBUG("RAX: " << int_to_hex(curr_return.rax)); }
+
+  DEBUG_CRITICAL("Setting return registers and exiting disabled function");
 
   if(curr_return.flag & 0b00001000) asm("movdqu (%0), %%xmm1" : : "r"(curr_return.xmm1) : );
   if(curr_return.flag & 0b00000100) asm("movdqu (%0), %%xmm0" : : "r"(curr_return.xmm0) : );
@@ -227,9 +237,37 @@ void read_writes() {
   DEBUG("Finished reading in writes");
 }
 
+void trap_ret_addrs(){
+  DEBUG("Setting up trap handlers for return addresses");
+  for (int i = 0; i < ret_addrs_filled; i++) {
+    uint64_t address = ret_addrs[i];
+    DEBUG("Setting up trap handler at the return instruction: " << int_to_hex(address));
+    single_step(address);
+  }
+  DEBUG("Finished setting up trap handlers for return addresses");
+}
+
+//ret addr logging
+void read_ret_addrs() {
+  DEBUG("Reading in return addresses");
+  
+  uint64_t buffer;
+  while(ret_addr_file.read((char*)&buffer, sizeof(uint64_t))) {
+    if (ret_addrs_index >= MAX_RETURNS) {
+       cerr << "Overflowing the return address array!\n";
+       exit(2);    
+    }
+    DEBUG("Read in return address data: " << int_to_hex(buffer));
+    ret_addrs[ret_addrs_filled++] = buffer;
+  }
+
+  trap_ret_addrs();
+
+  DEBUG("Finished reading in return addresses");
+}
+
 //first log number of writes
 //second log return struct
-
 void read_returns() {
   DEBUG("Reading in returns");
   
@@ -306,9 +344,12 @@ void read_returns() {
     cerr << "mprotect failed: " << strerror(errno) << "\n";
     exit(2); 
   }
-
-  DEBUG("Setting up jump from " << int_to_hex((uint64_t) func_address) << " to " << int_to_hex((uint64_t) disabled_fn));
-  new((void*)func_address)X86Jump((void*)disabled_fn);
-
+  
   DEBUG("Finished reading returns");
+}
+
+void setup_disabler_jump() {
+   DEBUG("Setting up jump for disabler from " << int_to_hex((uint64_t) func_address) << " to " << int_to_hex((uint64_t) disabled_fn));
+   new((void*)func_address)X86Jump((void*)disabled_fn);
+   DEBUG("Finished setting up jump for disabler");
 }
