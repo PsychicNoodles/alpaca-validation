@@ -48,7 +48,7 @@ uint8_t single_step(uint64_t address) {
 }
 
 void setup_analyzer() {
-  struct sigaction sig_action, debugger;
+  struct sigaction sig_action;
   memset(&sig_action, 0, sizeof(sig_action));
   sig_action.sa_sigaction = trap_handler;
   sigemptyset(&sig_action.sa_mask);
@@ -66,6 +66,14 @@ void setup_disabler() {
 }
 
 void setup_check() {
+
+  struct sigaction sig_action;
+  memset(&sig_action, 0, sizeof(sig_action));
+  sig_action.sa_sigaction = check_trap_handler;
+  sigemptyset(&sig_action.sa_mask);
+  sig_action.sa_flags = SA_SIGINFO;
+  sigaction(SIGTRAP, &sig_action, 0);
+
   read_syscalls();
   read_writes();
   read_returns();

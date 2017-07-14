@@ -9,8 +9,10 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <link.h>
+#include <ucontext.h>
 #include <unistd.h>
 
+#include <cstring>
 #include <fstream>
 #include <iostream>
 
@@ -237,6 +239,120 @@ void read_writes() {
   DEBUG("Finished reading in writes");
 }
 
+bool check_bytes(uint8_t* addr, uint8_t expected[8], uint8_t* cmp_addr, int index) {
+  DEBUG("Checking bytes for " << int_to_hex((uint64_t)addr) << " at ind " << index << " with write to "
+                              << int_to_hex((uint64_t)cmp_addr) << " (expected: " << int_to_hex((uint64_t)expected) << ")");
+
+  uint8_t* ptr = addr;
+  for(int i = 0; i < 8; i++) {
+    DEBUG("Checking byte " << int_to_hex((uint64_t)ptr) << " (" << i << ")");
+    if(ptr < cmp_addr || ptr > cmp_addr + 8) { // pointers don't overlap, so compare to actual memory value
+      DEBUG("Does not overlap, checking byte with memory");
+      if(*ptr != expected[i]) {
+        DEBUG("Different write detected at address " << int_to_hex((uint64_t)ptr) << ", part of write to " << int_to_hex((uint64_t)addr)
+                                                     << " (expected: " << int_to_hex(expected[i]) << "; found: " << int_to_hex(*addr) << ")");
+        return false;
+      }
+    } else {
+      DEBUG("Overlaps, skipping");
+    }
+    ptr++;
+  }
+  DEBUG("Bytes check passed");
+  return true;
+}
+
+bool check_8_bytes(uint64_t* addr, uint64_t expected, int index) {
+  DEBUG("Checking full 8 bytes for write " << index << ":  " << int_to_hex((uint64_t)addr) << " (expected: " << int_to_hex(expected) << ")");
+  if(*addr != expected) {
+    DEBUG("Different write detected at address: " << int_to_hex((uint64_t)addr) << " (expected: " << int_to_hex(expected) << "; found: " << int_to_hex(*addr) << ")");
+    return false;
+  }
+  DEBUG("Full 8 byte check passed");
+  return true;
+}
+
+bool check_write(int index, int num_writes) {
+   DEBUG("Checking nth write: " << ((writes_index + (index * 2)) / 2) << " (nth in fn call: " << index << ")");
+   uint8_t* address = (uint8_t*) writes[writes_index + (index*2)];
+   uint8_t* expected = (uint8_t*) &writes[writes_index + (index*2) + 1];
+   uint64_t expected64 = *((uint64_t*)expected);
+
+   uint8_t* cmp_addr;
+   for (int i = index + 1; i < num_writes; i++) {
+     DEBUG("Comparing with write " << i);
+     cmp_addr = (uint8_t*)writes[writes_index + i * 2];
+     DEBUG("The comparison address range is " << int_to_hex((uint64_t)cmp_addr) << " to " << int_to_hex((uint64_t)cmp_addr + 8));
+     //no overlap 
+     if((address < cmp_addr && address + 8 < cmp_addr) || (address > cmp_addr + 8 && address + 8 > cmp_addr + 8)) {
+       DEBUG("There is no overlap, checking full 8 bytes with memory");
+       if(!check_8_bytes((uint64_t*)cmp_addr, expected64, i)) return false;
+     }
+     else if (!check_bytes(address, expected, cmp_addr, index)) return false;
+   }
+
+   DEBUG("Identical writes to " << int_to_hex((uint64_t)address) << "(" << int_to_hex(expected64) << ")");
+   return true; 
+}
+
+bool check_return(ucontext_t* context) {
+  DEBUG("Checking nth return registers: " << returns_index);
+  if (returns_index > returns_filled) {
+    cerr << "Overflowing returns array!\n";
+    exit(2);
+  }
+  DEBUG("Popping a return registers struct");
+  ret_t curr_return = returns[returns_index++];
+  DEBUG("Return registers flag: " << (int)curr_return.flag);
+
+  if(curr_return.flag & 0b00000001) { DEBUG("RAX: " << int_to_hex(curr_return.rax)); }
+  if(curr_return.flag & 0b00000010) { DEBUG("RDX: " << int_to_hex(curr_return.rdx)); }
+  if(curr_return.flag & 0b00000100) { DEBUG("XMM0: " << int_to_hex(curr_return.xmm0[0]) << ", " << int_to_hex(curr_return.xmm0[1])
+                                            << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3])); }
+  if(curr_return.flag & 0b00001000) { DEBUG("XMM1: " << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
+                                            << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])); }
+  
+  DEBUG("Comparing registers");
+
+  if(curr_return.flag & 0b00000001 && context->uc_mcontext.gregs[REG_RAX] != curr_return.rax) {
+    DEBUG("Different RAX value detected (expected: " << int_to_hex(curr_return.rax) << "; found: " << context->uc_mcontext.gregs[REG_RAX] << ")");
+    return false;
+  } else {
+    DEBUG("Identical RAX values (" << int_to_hex(curr_return.rax) << ")");
+  }
+  if(curr_return.flag & 0b00000010 && context->uc_mcontext.gregs[REG_RDX] != curr_return.rdx) {
+    DEBUG("Different RDX value detected (expected: " << int_to_hex(curr_return.rdx) << "; found: " << context->uc_mcontext.gregs[REG_RDX] << ")");
+    return false;
+  } else {
+    DEBUG("Identical RDX values (" << int_to_hex(curr_return.rdx) << ")");
+  }
+  if(curr_return.flag & 0b00000100 && memcmp(context->uc_mcontext.fpregs->_xmm[0].element, curr_return.xmm0, sizeof(float) * 4) != 0) {
+    float* xmm0 = (float*) context->uc_mcontext.fpregs->_xmm[0].element;
+    DEBUG("Different XMM0 value detected (expected: " << int_to_hex(curr_return.xmm0[0]) << ", " << int_to_hex(curr_return.xmm0[1])
+                                                      << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3])
+                                                      << "; found: " << int_to_hex(xmm0[0]) << ", " << int_to_hex(xmm0[1])
+                                                      << ", " << int_to_hex(xmm0[2]) << ", " << int_to_hex(xmm0[3]) << ")");
+    return false;
+  } else {
+    DEBUG("Identical XMM0 values (" << int_to_hex(curr_return.xmm0[0]) << ", " << int_to_hex(curr_return.xmm0[1])
+                                    << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3]) << ")");
+  }
+  if(curr_return.flag & 0b00001000 && memcmp(context->uc_mcontext.fpregs->_xmm[1].element, curr_return.xmm1, sizeof(float) * 4) != 0) {
+    float* xmm1 = (float*) context->uc_mcontext.fpregs->_xmm[1].element;
+    DEBUG("Different XMM0 value detected (expected: " << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
+                                                      << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])
+                                                      << "; found: " << int_to_hex(xmm1[0]) << ", " << int_to_hex(xmm1[1])
+                                                      << ", " << int_to_hex(xmm1[2]) << ", " << int_to_hex(xmm1[3]) << ")");
+    return false;
+  } else {
+    DEBUG("Identical XMM1 values (" << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
+                                    << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3]) << ")");
+  }
+
+  DEBUG("Finished checking return registers");
+  return true;
+}
+
 void trap_ret_addrs(){
   DEBUG("Setting up trap handlers for return addresses");
   for (int i = 0; i < ret_addrs_filled; i++) {
@@ -245,6 +361,62 @@ void trap_ret_addrs(){
     single_step(address);
   }
   DEBUG("Finished setting up trap handlers for return addresses");
+}
+
+void check_trap_handler(int signal, siginfo_t* info, void* cont) {
+  DEBUG("Check trap handler triggered");
+  if (signal != SIGTRAP) {
+    cerr << "Signal received was not a SIGTRAP: " << signal << "\n";
+    exit(2);
+  }
+
+  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+  if (write_syscall_counts_index > write_syscall_counts_filled) {
+     cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
+     exit(2);
+  }
+  
+  DEBUG("Popping a write/syscall count");
+  uint64_t count = write_syscall_counts[write_syscall_counts_index++];
+  DEBUG("There are " << count << " writes/syscalls in this function invocation");
+
+  if (flags_index + count > flags_filled) {
+    cerr << "Overflowing the write/syscall flags array (flags_index: " << flags_index << ", flags_filled: " << flags_filled << ")\n";
+    exit(2);
+  }
+
+  DEBUG("Counting writes in the flag");
+  int num_writes = 0;
+  for (int i = 0; i < count; i++) {
+    if (flags[flags_index+i]) num_writes++;
+  }
+  DEBUG("There are " << num_writes << " writes in the flag");
+
+  if (writes_index + num_writes * 2 > writes_filled) {
+    cerr << "Overflowing the writes array (writes_index: " << writes_index << ", writes_filled: " << writes_filled << ")\n";
+    exit(2);
+  }
+
+  uint64_t* address = (uint64_t*) writes[writes_index + (num_writes*2) - 2];
+  uint64_t value = writes[writes_index + (num_writes*2) - 1];
+
+  DEBUG("Checking last write");
+  if(!check_8_bytes(address, value, num_writes - 1)) DEBUG("First write did not pass!");
+  DEBUG("Checking remaining writes");
+  for(int i = num_writes - 2; i >= 0; i--) {
+    if (!check_write(i, num_writes)) DEBUG("Writes did not pass!");
+  }
+  DEBUG("Finished checking writes");
+
+  flags_index += count;
+  writes_index += num_writes * 2;
+  
+  if(!check_return(context)) DEBUG("Returns did not pass!");
+
+  context->uc_mcontext.gregs[REG_RIP] = *((uint64_t*)context->uc_mcontext.gregs[REG_RSP]);
+  context->uc_mcontext.gregs[REG_RSP] += 8; 
+
+  DEBUG("Finished check trap handler");
 }
 
 //ret addr logging
