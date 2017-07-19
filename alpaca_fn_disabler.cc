@@ -17,6 +17,7 @@
 #include <iostream>
 
 #define PAGE_SIZE 4096
+#define NO_OVERLAPS {false, false, false, false, false, false, false, false}
 
 using namespace std;
 
@@ -33,7 +34,7 @@ typedef struct {
 ///return addresses
 uint64_t ret_addrs[MAX_RETURNS];
 size_t ret_addrs_index = 0;
-size_t ret_addrs_filled = 0; 
+size_t ret_addrs_filled = 0;
 
 /// return registers
 ret_t returns[MAX_RETURNS];
@@ -65,10 +66,8 @@ bool mimic_syscall();
 
 void disabled_fn() {
   DEBUG_CRITICAL("Entering disabled function");
-
-  cerr << "Testing malloc: " << int_to_hex((uint64_t) malloc(1024)) << "\n";
   
-  if (write_syscall_counts_index > write_syscall_counts_filled) {
+  if (write_syscall_counts_index >= write_syscall_counts_filled) {
     cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
     exit(2);
   }
@@ -77,7 +76,7 @@ void disabled_fn() {
   DEBUG("There are " << count << " writes/syscalls in this function invocation");
   
   for(int i = 0; i < count; i++) {
-    if (flags_index > flags_filled) {
+    if (flags_index >= flags_filled) {
       cerr << "Overflowing the write/syscall flags array\n";
       exit(2);
     }
@@ -96,7 +95,7 @@ void disabled_fn() {
     }
   }
 
-  if (returns_index > returns_filled) {
+  if (returns_index >= returns_filled) {
     cerr << "Overflowing returns array!\n";
     exit(2);
   }
@@ -125,7 +124,7 @@ void disabled_fn() {
 bool mimic_syscall() {
   DEBUG("Mimicing a syscall");
 
-  if (syses_index > syses_filled) {
+  if (syses_index >= syses_filled) {
     cerr << "Overflowing the syscalls array!\n";
     exit(2);
   }
@@ -190,7 +189,7 @@ void mimic_write() {
 void read_syscalls(){
   DEBUG("Reading in syscalls");
   uint64_t buffer; 
-  while(sys_file.read((char*) &buffer, sizeof(uint64_t))){
+  while(sys_file.read((char*) &buffer, sizeof(uint64_t))) {
     if (syses_filled >= MAX_SYSCALLS) {
       cerr << "Overflowing the syscalls array!\n";
       exit(2);
@@ -239,65 +238,83 @@ void read_writes() {
   DEBUG("Finished reading in writes");
 }
 
-bool check_bytes(uint8_t* addr, uint8_t expected[8], uint8_t* cmp_addr, int index) {
+void check_bytes(uint8_t* addr, uint8_t expected[8], uint8_t* cmp_addr, bool overlaps[8], int index) {
   DEBUG("Checking bytes for " << int_to_hex((uint64_t)addr) << " at ind " << index << " with write to "
                               << int_to_hex((uint64_t)cmp_addr) << " (expected: " << int_to_hex((uint64_t)expected) << ")");
 
   uint8_t* ptr = addr;
   for(int i = 0; i < 8; i++) {
     DEBUG("Checking byte " << int_to_hex((uint64_t)ptr) << " (" << i << ")");
-    if(ptr < cmp_addr || ptr > cmp_addr + 8) { // pointers don't overlap, so compare to actual memory value
-      DEBUG("Does not overlap, checking byte with memory");
-      if(*ptr != expected[i]) {
-        DEBUG("Different write detected at address " << int_to_hex((uint64_t)ptr) << ", part of write to " << int_to_hex((uint64_t)addr)
-                                                     << " (expected: " << int_to_hex(expected[i]) << "; found: " << int_to_hex(*addr) << ")");
-        return false;
-      }
+    if(overlaps[i]) {
+      DEBUG("Already overlaps, skipping");
+    } else if(ptr >= cmp_addr && ptr < cmp_addr + 8) { // bytes overlap
+      DEBUG("Marking as overlapping");
+      overlaps[i] = true;
     } else {
-      DEBUG("Overlaps, skipping");
+      DEBUG("Does not overlap, skipping");
     }
     ptr++;
   }
-  DEBUG("Bytes check passed");
-  return true;
+  DEBUG("Finished checking bytes");
 }
 
-bool check_8_bytes(uint64_t* addr, uint64_t expected, int index) {
-  DEBUG("Checking full 8 bytes for write " << index << ":  " << int_to_hex((uint64_t)addr) << " (expected: " << int_to_hex(expected) << ")");
-  if(*addr != expected) {
-    DEBUG("Different write detected at address: " << int_to_hex((uint64_t)addr) << " (expected: " << int_to_hex(expected) << "; found: " << int_to_hex(*addr) << ")");
-    return false;
+bool cmp_bytes(uint8_t* address, uint8_t* expected, bool overlaps[8]) {
+  bool diff = false;
+  for(int i = 0; i < 8; i++) {
+    DEBUG("Checking byte " << i << " (" << int_to_hex((uint64_t)&address[i]) << ")");
+    if(overlaps[i]) {
+      DEBUG("Overlaps, skipping");
+    } else if(address[i] != expected[i]) {
+      DEBUG("Different write detected at address " << int_to_hex((uint64_t)&address[i]) << " as part write to " << int_to_hex((uint64_t)address)
+                                                   << " (expected: " << int_to_hex(expected[i]) << "; found: " << int_to_hex(address[i]) << ")");
+      diff = true;
+      wrong_writes++;
+    } else {
+      DEBUG("Byte is identical to memory");
+    }
   }
-  DEBUG("Full 8 byte check passed");
-  return true;
+  return diff;
 }
 
-bool check_write(int index, int num_writes) {
+bool check_write(int index, int num_writes, ucontext_t* context) {
    DEBUG("Checking nth write: " << ((writes_index + (index * 2)) / 2) << " (nth in fn call: " << index << ")");
+   DEBUG("RAX is: " << int_to_hex(context->uc_mcontext.gregs[REG_RAX]));
    uint8_t* address = (uint8_t*) writes[writes_index + (index*2)];
    uint8_t* expected = (uint8_t*) &writes[writes_index + (index*2) + 1];
    uint64_t expected64 = *((uint64_t*)expected);
+   bool overlaps[8] = {false};
 
+   DEBUG("Write is to " << int_to_hex((uint64_t)address) << " with expected value " << int_to_hex(expected64));
+   for(int i = 0; i < 8; i++) {
+     DEBUG("expected[" << i << "]: " << int_to_hex(expected[i]));
+   }
+
+   DEBUG("Comparing with later writes");
    uint8_t* cmp_addr;
-   for (int i = index + 1; i < num_writes; i++) {
+   for (int i = num_writes-1; i > index; i--) {
      DEBUG("Comparing with write " << i);
      cmp_addr = (uint8_t*)writes[writes_index + i * 2];
      DEBUG("The comparison address range is " << int_to_hex((uint64_t)cmp_addr) << " to " << int_to_hex((uint64_t)cmp_addr + 8));
      //no overlap 
      if((address < cmp_addr && address + 8 < cmp_addr) || (address > cmp_addr + 8 && address + 8 > cmp_addr + 8)) {
-       DEBUG("There is no overlap, checking full 8 bytes with memory");
-       if(!check_8_bytes((uint64_t*)cmp_addr, expected64, i)) return false;
+       DEBUG("There is no overlap, skipping");
      }
-     else if (!check_bytes(address, expected, cmp_addr, index)) return false;
+     else check_bytes(address, expected, cmp_addr, overlaps, i);
    }
+   DEBUG("Finished comparing with later writes, comparing with actual memory values");
 
-   DEBUG("Identical writes to " << int_to_hex((uint64_t)address) << "(" << int_to_hex(expected64) << ")");
-   return true; 
+   bool diff = cmp_bytes(address, expected, overlaps);
+
+   if(!diff) {
+     DEBUG("Identical writes to " << int_to_hex((uint64_t)address) << "(" << int_to_hex(expected64) << ")");
+   }
+   DEBUG("***");
+   return diff;
 }
 
 bool check_return(ucontext_t* context) {
   DEBUG("Checking nth return registers: " << returns_index);
-  if (returns_index > returns_filled) {
+  if (returns_index >= returns_filled) {
     cerr << "Overflowing returns array!\n";
     exit(2);
   }
@@ -313,16 +330,16 @@ bool check_return(ucontext_t* context) {
                                             << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])); }
   
   DEBUG("Comparing registers");
-
+  bool diff = false;
   if(curr_return.flag & 0b00000001 && context->uc_mcontext.gregs[REG_RAX] != curr_return.rax) {
-    DEBUG("Different RAX value detected (expected: " << int_to_hex(curr_return.rax) << "; found: " << context->uc_mcontext.gregs[REG_RAX] << ")");
-    return false;
+    DEBUG("Different RAX value detected (expected: " << int_to_hex(curr_return.rax) << "; found: " << int_to_hex(context->uc_mcontext.gregs[REG_RAX]) << ")");
+    diff = true;
   } else {
     DEBUG("Identical RAX values (" << int_to_hex(curr_return.rax) << ")");
   }
   if(curr_return.flag & 0b00000010 && context->uc_mcontext.gregs[REG_RDX] != curr_return.rdx) {
-    DEBUG("Different RDX value detected (expected: " << int_to_hex(curr_return.rdx) << "; found: " << context->uc_mcontext.gregs[REG_RDX] << ")");
-    return false;
+    DEBUG("Different RDX value detected (expected: " << int_to_hex(curr_return.rdx) << "; found: " << int_to_hex(context->uc_mcontext.gregs[REG_RDX]) << ")");
+    diff = true;
   } else {
     DEBUG("Identical RDX values (" << int_to_hex(curr_return.rdx) << ")");
   }
@@ -332,7 +349,7 @@ bool check_return(ucontext_t* context) {
                                                       << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3])
                                                       << "; found: " << int_to_hex(xmm0[0]) << ", " << int_to_hex(xmm0[1])
                                                       << ", " << int_to_hex(xmm0[2]) << ", " << int_to_hex(xmm0[3]) << ")");
-    return false;
+    diff = true;
   } else {
     DEBUG("Identical XMM0 values (" << int_to_hex(curr_return.xmm0[0]) << ", " << int_to_hex(curr_return.xmm0[1])
                                     << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3]) << ")");
@@ -343,14 +360,14 @@ bool check_return(ucontext_t* context) {
                                                       << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])
                                                       << "; found: " << int_to_hex(xmm1[0]) << ", " << int_to_hex(xmm1[1])
                                                       << ", " << int_to_hex(xmm1[2]) << ", " << int_to_hex(xmm1[3]) << ")");
-    return false;
+    diff = true;
   } else {
     DEBUG("Identical XMM1 values (" << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
                                     << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3]) << ")");
   }
 
   DEBUG("Finished checking return registers");
-  return true;
+  return diff;
 }
 
 void trap_ret_addrs(){
@@ -371,7 +388,9 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
   }
 
   ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
-  if (write_syscall_counts_index > write_syscall_counts_filled) {
+
+  DEBUG("%r13: " << int_to_hex(*(uint64_t*)context->uc_mcontext.gregs[REG_R13]));
+  if (write_syscall_counts_index >= write_syscall_counts_filled) {
      cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
      exit(2);
   }
@@ -388,8 +407,8 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
   DEBUG("Counting writes in the flag");
   int num_writes = 0;
   for (int i = 0; i < count; i++) {
-    if (flags[flags_index+i]) num_writes++;
-  }
+     if (flags[flags_index + i]) num_writes++;
+  }  
   DEBUG("There are " << num_writes << " writes in the flag");
 
   if (writes_index + num_writes * 2 > writes_filled) {
@@ -397,21 +416,30 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
     exit(2);
   }
 
-  uint64_t* address = (uint64_t*) writes[writes_index + (num_writes*2) - 2];
-  uint64_t value = writes[writes_index + (num_writes*2) - 1];
+  uint8_t* address = (uint8_t*) writes[writes_index + (num_writes*2) - 2];
+  uint8_t* expected = (uint8_t*) &writes[writes_index + (num_writes*2) - 1];
 
-  DEBUG("Checking last write");
-  if(!check_8_bytes(address, value, num_writes - 1)) DEBUG("First write did not pass!");
-  DEBUG("Checking remaining writes");
-  for(int i = num_writes - 2; i >= 0; i--) {
-    if (!check_write(i, num_writes)) DEBUG("Writes did not pass!");
+  if (count > 0) {
+    DEBUG("Checking last write");
+    bool none[8] = NO_OVERLAPS;
+    if(cmp_bytes(address, expected, none)) {
+      DEBUG("First write did not pass!");
+    } else {
+      DEBUG("First write passed, checking remaining writes");
+      for(int i = num_writes - 2; i >= 0; i--) {
+              if (check_write(i, num_writes, context)) DEBUG("Writes did not pass!");
+      }
+    }
+  } else {
+    DEBUG("No writes!");  
   }
+  
   DEBUG("Finished checking writes");
 
   flags_index += count;
   writes_index += num_writes * 2;
   
-  if(!check_return(context)) DEBUG("Returns did not pass!");
+  if(check_return(context)) DEBUG("Returns did not pass!");
 
   context->uc_mcontext.gregs[REG_RIP] = *((uint64_t*)context->uc_mcontext.gregs[REG_RSP]);
   context->uc_mcontext.gregs[REG_RSP] += 8; 

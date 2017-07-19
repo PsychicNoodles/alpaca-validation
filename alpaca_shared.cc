@@ -4,7 +4,8 @@
 #include "alpaca_fn_disabler.hh"
 
 #include <iomanip>
-
+#include <malloc.h>
+#include <execinfo.h>
 uint64_t offset;
 
 uint64_t func_address; //the address of the target function
@@ -17,11 +18,53 @@ fstream ret_addr_file;
 //the byte overwrtitten with 0xCC for single-stepping, used in analyzer
 uint8_t start_byte;
 
+uint64_t wrong_writes;
+
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 #define OUT_FMODE fstream::out | fstream::trunc | fstream::binary
 #define IN_FMODE fstream::in | fstream::binary
+
+
+/**
+ * A temporary gdb workaround debugger.
+ */
+void seg_handler(int sig, siginfo_t* info, void* context) {
+
+  if (sig != SIGSEGV) {
+    fprintf(stderr, "should not be here\n");
+    exit(2); 
+  }
+
+  fprintf(stderr, "in SEG handler\n");
+  fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
+  int j, nptrs; 
+  void* buffer[200];
+  char** strings;
+  signal(sig, SIG_DFL);
+  nptrs = backtrace(buffer, 200);
+
+  backtrace_symbols_fd(buffer, nptrs, STDOUT_FILENO);
+  printf("~~~\n");
+
+  void* bt[1];
+  bt[0] = (void*) ((ucontext_t*) context)->uc_mcontext.gregs[REG_RIP];
+
+  backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
+}
+
+void setup_segv_handler() {
+  DEBUG("Enabling segfault handler!");
+  struct sigaction sig_action;
+  memset(&sig_action, 0, sizeof(sig_action));
+  sig_action.sa_sigaction = seg_handler;
+  sigemptyset(&sig_action.sa_mask);
+  sig_action.sa_flags = SA_SIGINFO;
+  sigaction(SIGSEGV, &sig_action, 0);
+}
+
+
 
 /**
  * Enables single-stepping (instruction by instruction) through the function
@@ -66,7 +109,6 @@ void setup_disabler() {
 }
 
 void setup_check() {
-
   struct sigaction sig_action;
   memset(&sig_action, 0, sizeof(sig_action));
   sig_action.sa_sigaction = check_trap_handler;
@@ -96,9 +138,9 @@ void open_logs(fstream::openmode mode) {
     cerr << "Error opening sys log: " << strerror(errno);
     exit(4);
   }
-  ret_addr_file.open("ret_addr-logger", mode);
+  ret_addr_file.open("ret-addr-logger", mode);
   if(ret_addr_file.fail()) {
-    cerr << "Error opening ret_addr log: " << strerror(errno);
+    cerr << "Error opening ret-addr log: " << strerror(errno);
     exit(4);
   }
   
@@ -112,8 +154,21 @@ void check_self_maps() {
   cerr << self_maps << "\n";
 }
 
+void test_malloc(){
+        size_t size_arr[7] = {16, 32, 64, 128, 256, 512, 1024}; 
+        cerr << "Checking malloc calls\n";
+
+        for(int i =0; i< 7; i++){
+                char* test = (char*)malloc(sizeof(char)*size_arr[i]);
+                cerr << "Malloced: " << int_to_hex((uint64_t)test) << " ;usable size: " << malloc_usable_size(test) << "\n";
+        }
+}
+
 static int wrapped_main(int argc, char** argv, char** env) {
+        //test_malloc();      
   DEBUG("Entered Alpaca's main");
+  setup_segv_handler();
+  wrong_writes = 0;
   
   //storing the func_name searched for as the last argument
   char alpaca_mode[256], func_name[256];
@@ -123,7 +178,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("The mode is " << alpaca_mode);
   DEBUG("The target function is " << func_name);
 
-  check_self_maps();
+  check_self_maps(); 
 
   func_address = find_address("/proc/self/exe", func_name);
   if (func_address == 0) {
@@ -132,19 +187,19 @@ static int wrapped_main(int argc, char** argv, char** env) {
   }
   DEBUG("The address of the target function is " << int_to_hex(func_address));
     
-  if (strcmp(alpaca_mode, "analyze") == 0) {
+  if (strcmp(alpaca_mode, "a") == 0) {
     DEBUG("Analyze mode");
     
     open_logs(OUT_FMODE);
 
     setup_analyzer();                
-  } else if (strcmp(alpaca_mode, "disable") == 0) {
+  } else if (strcmp(alpaca_mode, "d") == 0) {
     DEBUG("Disable mode");
     
     open_logs(IN_FMODE);
 
     setup_disabler();
-  } else if (strcmp(alpaca_mode, "check") == 0) {
+  } else if (strcmp(alpaca_mode, "c") == 0) {
     DEBUG("Check mode");
 
     open_logs(IN_FMODE);
@@ -161,7 +216,9 @@ static int wrapped_main(int argc, char** argv, char** env) {
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
   cerr << "Starting target program\n";
   **/
+  //test_malloc();
   int main_return = og_main(argc, argv, env);
+  //test_malloc();
   /**
   DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
@@ -172,15 +229,19 @@ static int wrapped_main(int argc, char** argv, char** env) {
     cerr << end_readings[i].zone << ": " << dec << end_readings[i].energy - start_readings[i].energy << "\n";
   }
   **/
-
-  check_self_maps();
   
+  //test_malloc();
+  check_self_maps();
+  cerr << "Wrong writes: " << wrong_writes << "\n";
+  
+  //test_malloc();
   return_file.close();
   write_file.close();
   sys_file.close();
-  ret_addr_file.close(); 
-
-  return main_return; 
+  ret_addr_file.close();
+  
+  //test_malloc();
+  return main_return;
 }
 
 void shut_down() {

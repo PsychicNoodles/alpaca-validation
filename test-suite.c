@@ -166,8 +166,29 @@ pointer_t pointer_func() {
   ret.a = 30;
   ret.b = 31.0;
   ret.c = (char*) malloc(sizeof(char) * 9);
-  strncpy(ret.c, "testtest", 9);
+  ret.c[0] = 't';
+  ret.c[0] = 'e';
+  ret.c[0] = 's';
+  ret.c[0] = 't';
+  ret.c[0] = 't';
+  ret.c[0] = 'e';
+  ret.c[0] = 's';
+  ret.c[0] = 't';
+  ret.c[0] = '\0';
+  
   return ret;
+}
+
+void malloc_free_func() {
+  char* a[500]; 
+  for (int i = 0; i < 500; i++) 
+    a[i] = (char*)malloc(sizeof(char)*(i*3));
+
+  for(int i = 0; i < 500; i++)
+     printf("malloced: %p\n", a[i]);
+
+  //for (int i = 0; i < 500; i++)
+          //free(a[i]);
 }
 
 triple_double_t triple_double_func() {
@@ -251,6 +272,10 @@ int main(int argc, char** argv) {
   if(cmp(argv[1], "pointer")) {
     pointer_t ret = pointer_func();
     printf("%d %.1lf %s\n", ret.a, ret.b, ret.c);
+  }
+  if(cmp(argv[1], "malloc_free")) {
+    malloc_free_func();
+    //printf("0\n");
   }
   if(cmp(argv[1], "triple_double")) {
     triple_double_t ret = triple_double_func();

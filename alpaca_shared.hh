@@ -356,6 +356,8 @@ extern fstream ret_addr_file;
 
 extern uint8_t start_byte; // used in analyzer
 
+extern uint64_t wrong_writes;
+
 /**
  * Locates the address of the target function
  * file_path: the path to the binary file
@@ -368,5 +370,9 @@ int measure_energy(energy_reading_t* readings, int max);
 char* int_to_hex(uint64_t i);
 
 uint8_t single_step(uint64_t address);
+
+void test_malloc();
+
+void check_self_maps();
 
 #endif

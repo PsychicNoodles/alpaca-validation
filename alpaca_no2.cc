@@ -40,6 +40,7 @@ uint64_t* stack_base; //the beginning of the stack for the targeted function
 
 //keep track of the detected writes and syscall of the function 
 uint64_t write_syscall_count;
+uint64_t write_count;
 
 //true for write, false for syscall
 bool write_syscall_flag[MAX_WRITE_SYSCALL_COUNT];
@@ -84,19 +85,19 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
   DEBUG("Size of offset: " << (int) op->offset << ", base register: " << op->base << ", index register: " << op->index);
   switch(op->offset) {
   case 8:
-    DEBUG("Instruction offset is 8 bits");
+    DEBUG("Instruction offset is 8 bits long");
     offset = (int8_t) op->lval.sbyte;
     break; 
   case 16:
-    DEBUG("Instruction offset is 16 bits");
+    DEBUG("Instruction offset is 16 bits long");
     offset = (int16_t) op->lval.sword;
     break;
   case 32:
-    DEBUG("Instruction offset is 32 bits");
+    DEBUG("Instruction offset is 32 bits long");
     offset = (int32_t) op->lval.sdword;
     break;
   case 64:
-    DEBUG("Instruction offset is 64 bits");
+    DEBUG("Instruction offset is 64 bits long");
     offset = (int64_t) op->lval.sqword;
     break;
   default:
@@ -264,6 +265,9 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   
   uint64_t* rsp;
 
+  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+
+  
   //logging writes
   if (mem_writing != 0) {
     if (write_count > MAX_WRITE_COUNT) {
@@ -271,14 +275,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       exit(2);
     }
     
+    DEBUG("Last instruction was a memory write to address: " << int_to_hex(mem_writing) << " (count: " << write_count << ")");
+    DEBUG("RAX is: " << int_to_hex(context->uc_mcontext.gregs[REG_RAX]));
     write_count++;
-    DEBUG("Last instruction was a memory write to address: " << int_to_hex(mem_writing));
     log_write(mem_writing);
     mem_writing = 0;
   }
   
-  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
-
   //if the last instruction was a syscall then grab and log the return value
   if(waiting_syscall) {
     DEBUG("Last instruction was a syscall, gathering return value");
@@ -289,8 +292,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   if (start_byte == 0x55) {
     if (first_run) {
       DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
-      cerr << "Testing malloc: " << int_to_hex((uint64_t) malloc(1024)) << "\n";
-
       
       DEBUG("Function starting byte is 0x55");
       DEBUG("Initializing stack base");
@@ -316,7 +317,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     
     if (first_run) {
       DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
-      cerr << "Testing malloc: " << int_to_hex((uint64_t) malloc(1024)) << "\n";
       
       DEBUG("Subtracted RIP with value " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << " to account for the 0xCC overwrite");
 
@@ -367,7 +367,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
       DEBUG("Finished resetting static variables");
 
-      return;
+     return;
     }
   }
 
@@ -379,6 +379,15 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   DEBUG("Instruction disassembled");
 
   DEBUG("Instruction at " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << ": " << ud_insn_asm(&ud_obj));
+  //SPECIAL TEST CASE
+  if(context->uc_mcontext.gregs[REG_RIP] == 0x7fff7bd1de00) check_self_maps();
+
+  /*
+  void* buf[200];
+  int bt = backtrace(buf, 200);
+  DEBUG("Getting the backtrace (" << bt << ")");
+  backtrace_symbols_fd(buf, bt, 2);
+  */
 
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
@@ -479,7 +488,7 @@ void log_write(uint64_t dest_address) {
   DEBUG("Dereferencing destination address");
   uint64_t val = *((uint64_t*)dest_address);
 
-  DEBUG("Write " << val << " to " << int_to_hex(dest_address));
+  DEBUG("Write " << int_to_hex(val) << " to " << int_to_hex(dest_address));
         
   write_file.write((char*) &dest_address, sizeof(uint64_t));
   DEBUG("Dest addr is " << int_to_hex(dest_address));
@@ -496,6 +505,9 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
   }
   write_syscall_flag[write_syscall_count++] = false;
 
+  DEBUG("Logging the syscall address");
+  ret_addr_file.write((char*) &context->uc_mcontext.gregs[REG_RIP], sizeof(uint64_t));
+  
   DEBUG("Looking up syscall");
   // look up syscall information in global syscalls array
   syscall_t syscall = syscalls[sys_num];
@@ -638,31 +650,3 @@ uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context) {
     return NULL; 
   }
 }
-
-/**
- * A temporary gdb workaround debugger.
- */
-void seg_handler(int sig, siginfo_t* info, void* context) {
-
-  if (sig != SIGSEGV) {
-    fprintf(stderr, "should not be here\n");
-    exit(2); 
-  }
-
-  fprintf(stderr, "in SEG handler\n");
-  fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
-  int j, nptrs; 
-  void* buffer[200];
-  char** strings;
-  signal(sig, SIG_DFL);
-  nptrs = backtrace(buffer, 200);
-
-  backtrace_symbols_fd(buffer, nptrs, STDOUT_FILENO);
-  printf("~~~\n");
-
-  void* bt[1];
-  bt[0] = (void*) ((ucontext_t*) context)->uc_mcontext.gregs[REG_RIP];
-
-  backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
-}
-
