@@ -39,6 +39,7 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 
   fprintf(stderr, "in SEG handler\n");
   fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
+  exit(3);
   int j, nptrs; 
   void* buffer[200];
   char** strings;
@@ -398,6 +399,15 @@ int measure_energy(energy_reading_t* readings, int max) {
     }
   }
   return ind;
+}
+
+void initialize_ud(ud_t* ud_obj) {
+  DEBUG("Initializing the udis86 object");
+  ud_init(ud_obj);
+  ud_set_mode(ud_obj, 64);
+  ud_set_syntax(ud_obj, UD_SYN_ATT);
+  ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
+  DEBUG("Finished initializing the udis86 object");
 }
 
 char* int_to_hex(uint64_t i) {

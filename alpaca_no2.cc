@@ -2,10 +2,6 @@
 
 //citations: modified example code from
 //https://github.com/aclements/libelfin/blob/master/examples/dump-syms.cc
-#include "elf++.hh" //parsing the binary file 
-#include "x86jump.h" //jumping to function disabler
-#include <udis86.h> //interpreting assembly instructions
-
 #include <arpa/inet.h>
 #include <bitset>
 #include <cstdint>
@@ -57,22 +53,12 @@ const ud_type_t syscall_params[6] = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_
 //function declarations
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context);
-void initialize_ud(ud_t* ud_obj);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
 void log_write(uint64_t dest_address);
 void test_operand(ud_t* obj, int n);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 void log_syscall(uint64_t sys_num, ucontext_t* context);
 void log_sys_ret(uint64_t ret_value_reg);
-
-void initialize_ud(ud_t* ud_obj) {
-  DEBUG("Initializing the udis86 object");
-  ud_init(ud_obj);
-  ud_set_mode(ud_obj, 64);
-  ud_set_syntax(ud_obj, UD_SYN_ATT);
-  ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
-  DEBUG("Finished initializing the udis86 object");
-}
 
 
 /**

@@ -1,8 +1,5 @@
 #include "alpaca_shared.hh"
 
-#include "elf++.hh"
-#include "x86jump.h"
-
 #include <arpa/inet.h>
 #include <bitset>
 #include <sys/types.h>
@@ -60,6 +57,11 @@ size_t syses_filled = 0;
 uint64_t writes[MAX_WRITES];
 size_t writes_index = 0;
 size_t writes_filled = 0;
+
+// start bytes of 0xCC interrupted syscalls
+uint8_t start_bytes[MAX_SYSCALLS + MAX_RETURNS];
+size_t start_bytes_index = 0;
+size_t start_bytes_filled = 0; 
 
 void mimic_write();
 bool mimic_syscall();
@@ -239,8 +241,8 @@ void read_writes() {
 }
 
 void check_bytes(uint8_t* addr, uint8_t expected[8], uint8_t* cmp_addr, bool overlaps[8], int index) {
-  DEBUG("Checking bytes for " << int_to_hex((uint64_t)addr) << " at ind " << index << " with write to "
-                              << int_to_hex((uint64_t)cmp_addr) << " (expected: " << int_to_hex((uint64_t)expected) << ")");
+  DEBUG("Checking bytes for " << int_to_hex((uint64_t)addr) << " with write to " << int_to_hex((uint64_t)cmp_addr)
+                              << " at ind " << index << " (expected: " << int_to_hex((uint64_t)expected) << ")");
 
   uint8_t* ptr = addr;
   for(int i = 0; i < 8; i++) {
@@ -276,11 +278,11 @@ bool cmp_bytes(uint8_t* address, uint8_t* expected, bool overlaps[8]) {
   return diff;
 }
 
-bool check_write(int index, int num_writes, ucontext_t* context) {
-   DEBUG("Checking nth write: " << ((writes_index + (index * 2)) / 2) << " (nth in fn call: " << index << ")");
+bool check_write(int writes_upper, int writes_lower, ucontext_t* context) {
+   DEBUG("Checking nth write: " << (writes_upper * 2));
    DEBUG("RAX is: " << int_to_hex(context->uc_mcontext.gregs[REG_RAX]));
-   uint8_t* address = (uint8_t*) writes[writes_index + (index*2)];
-   uint8_t* expected = (uint8_t*) &writes[writes_index + (index*2) + 1];
+   uint8_t* address = (uint8_t*) writes[writes_upper * 2];
+   uint8_t* expected = (uint8_t*) &writes[writes_upper * 2 + 1];
    uint64_t expected64 = *((uint64_t*)expected);
    bool overlaps[8] = {false};
 
@@ -291,9 +293,9 @@ bool check_write(int index, int num_writes, ucontext_t* context) {
 
    DEBUG("Comparing with later writes");
    uint8_t* cmp_addr;
-   for (int i = num_writes-1; i > index; i--) {
+   for (int i = writes_upper - 1; i > writes_lower; i--) {
      DEBUG("Comparing with write " << i);
-     cmp_addr = (uint8_t*)writes[writes_index + i * 2];
+     cmp_addr = (uint8_t*)writes[i * 2];
      DEBUG("The comparison address range is " << int_to_hex((uint64_t)cmp_addr) << " to " << int_to_hex((uint64_t)cmp_addr + 8));
      //no overlap 
      if((address < cmp_addr && address + 8 < cmp_addr) || (address > cmp_addr + 8 && address + 8 > cmp_addr + 8)) {
@@ -371,11 +373,11 @@ bool check_return(ucontext_t* context) {
 }
 
 void trap_ret_addrs(){
-  DEBUG("Setting up trap handlers for return addresses");
+  DEBUG("Setting up trap handlers for return addresses and system calls");
   for (int i = 0; i < ret_addrs_filled; i++) {
     uint64_t address = ret_addrs[i];
-    DEBUG("Setting up trap handler at the return instruction: " << int_to_hex(address));
-    single_step(address);
+    DEBUG("Setting up trap handler at the return/syscall instruction: " << int_to_hex(address));
+    start_bytes[start_bytes_filled++] = single_step(address);
   }
   DEBUG("Finished setting up trap handlers for return addresses");
 }
@@ -387,47 +389,85 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
     exit(2);
   }
 
-  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+  static ud_t ud_obj;
+  static bool first_run = true;
+  static size_t total_func_writes = 0;
+  static size_t writes_lower = 0; // saved from last syscall/return
+  // syscall indices array
+  static size_t sys_indices[MAX_SYSCALLS];
+  static size_t sys_indices_index = 0;
+  static size_t sys_indices_filled = 0;
+  
 
-  DEBUG("%r13: " << int_to_hex(*(uint64_t*)context->uc_mcontext.gregs[REG_R13]));
-  if (write_syscall_counts_index >= write_syscall_counts_filled) {
-     cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
-     exit(2);
+  if(first_run) {
+    initialize_ud(&ud_obj);
+
+    //for return upper bound number of writes
+    if (write_syscall_counts_index >= write_syscall_counts_filled) {
+      cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
+      exit(2);
+    }
+    DEBUG("Popping a write/syscall count");
+    uint64_t count = write_syscall_counts[write_syscall_counts_index++];
+    DEBUG("There are " << count << " writes/syscalls in this function invocation");
+    
+    for(size_t i = 0; i < flags_filled; i++) {
+      if (!flags[i]) {
+        sys_indices[sys_indices_filled] = i;
+        sys_indices_filled++; 
+      } else total_func_writes++; 
+    }
+
+    for(size_t i = 0; i < sys_indices_filled; i++) DEBUG("sys_indices[" << i << "]: " << sys_indices[i]);
+          for(int i = 0; i < ret_addrs_filled; i++) DEBUG("ret_addrs[" << i << "]: " << int_to_hex(ret_addrs[i]));
+    
+    first_run = false;
   }
   
-  DEBUG("Popping a write/syscall count");
-  uint64_t count = write_syscall_counts[write_syscall_counts_index++];
-  DEBUG("There are " << count << " writes/syscalls in this function invocation");
+  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
-  if (flags_index + count > flags_filled) {
-    cerr << "Overflowing the write/syscall flags array (flags_index: " << flags_index << ", flags_filled: " << flags_filled << ")\n";
-    exit(2);
-  }
+  //DEBUG("%r13: " << int_to_hex(*(uint64_t*)context->uc_mcontext.gregs[REG_R13]));
+  context->uc_mcontext.gregs[REG_RIP]--; // move back to the trapped instruction
 
-  DEBUG("Counting writes in the flag");
-  int num_writes = 0;
-  for (int i = 0; i < count; i++) {
-     if (flags[flags_index + i]) num_writes++;
-  }  
-  DEBUG("There are " << num_writes << " writes in the flag");
+  uint8_t byte = start_bytes[start_bytes_index];
+  bool is_return = byte == 0xc3 || byte == 0xcb; // maybe 0xc2 and 0xca too
+  DEBUG("start_byte: " << int_to_hex(start_bytes[start_bytes_index]));
+  
+  DEBUG("At a return: " << (is_return ? "true" : "false"));
+  DEBUG("Instruction at " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << ": " << ud_insn_asm(&ud_obj));
 
-  if (writes_index + num_writes * 2 > writes_filled) {
-    cerr << "Overflowing the writes array (writes_index: " << writes_index << ", writes_filled: " << writes_filled << ")\n";
+  DEBUG("Calculating number of writes");
+  DEBUG("sys_indices_index: " << sys_indices_index);
+
+  size_t writes_upper;
+  
+  if (is_return) writes_upper = total_func_writes; 
+  else writes_upper = sys_indices[sys_indices_index++];
+  
+  size_t num_writes = writes_upper - writes_lower; 
+  DEBUG("The upper bound of writes is: " << writes_upper << "; the lower bound is: " << writes_lower);
+  
+  if (writes_index + num_writes* 2 > writes_filled) {
+    cerr << "Overflowing the writes array (writes_index: " << writes_index << ", writes_filled: " << writes_filled << ", num_writes: " << num_writes << ")\n";
     exit(2);
   }
 
   uint8_t* address = (uint8_t*) writes[writes_index + (num_writes*2) - 2];
   uint8_t* expected = (uint8_t*) &writes[writes_index + (num_writes*2) - 1];
 
-  if (count > 0) {
+  DEBUG("Current write index: " << writes_index << " , num_writes: " << num_writes);
+  if (num_writes > 0) {
     DEBUG("Checking last write");
     bool none[8] = NO_OVERLAPS;
     if(cmp_bytes(address, expected, none)) {
       DEBUG("First write did not pass!");
     } else {
       DEBUG("First write passed, checking remaining writes");
-      for(int i = num_writes - 2; i >= 0; i--) {
-              if (check_write(i, num_writes, context)) DEBUG("Writes did not pass!");
+      if (num_writes > 1) {
+        for(int i = writes_upper - 1; i >= writes_lower && i < writes_upper; i--) { //underflow, watch out
+          DEBUG("i is " << i << " and write_index is " << writes_index);
+          if (check_write(i, writes_lower, context)) DEBUG("Writes did not pass!");
+        }
       }
     }
   } else {
@@ -436,16 +476,24 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
   
   DEBUG("Finished checking writes");
 
-  flags_index += count;
   writes_index += num_writes * 2;
-  
-  if(check_return(context)) DEBUG("Returns did not pass!");
+   
+  if (is_return) {
+    DEBUG("Checking return values");
+    if(check_return(context)) DEBUG("Returns did not pass!");
 
-  context->uc_mcontext.gregs[REG_RIP] = *((uint64_t*)context->uc_mcontext.gregs[REG_RSP]);
-  context->uc_mcontext.gregs[REG_RSP] += 8; 
+    context->uc_mcontext.gregs[REG_RIP] = *((uint64_t*)context->uc_mcontext.gregs[REG_RSP]);
+    context->uc_mcontext.gregs[REG_RSP] += 8;
+    start_bytes_index++; 
+  } else { //putting back the original byte to perform the syscall
+    ((uint8_t*)context->uc_mcontext.gregs[REG_RIP])[0] = start_bytes[start_bytes_index++];
+  }
 
+  writes_lower = writes_upper + 1; 
+  DEBUG("Saved the current writes upper bound: " << writes_upper << "; to lower bound: " << writes_lower);
   DEBUG("Finished check trap handler");
 }
+
 
 //ret addr logging
 void read_ret_addrs() {

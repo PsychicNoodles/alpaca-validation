@@ -5,8 +5,10 @@
 #ifndef ALPACA_SHARED
 #define ALPACA_SHARED
 
-#include "elf++.hh"
+#include "elf++.hh" //parsing the binary file 
 #include "interpose.hh" //interposing exit functions
+#include "x86jump.h" //jumping to function disabler
+#include <udis86.h> //interpreting assembly instructions
 
 #include <fcntl.h>
 #include <link.h>
@@ -370,6 +372,8 @@ int measure_energy(energy_reading_t* readings, int max);
 char* int_to_hex(uint64_t i);
 
 uint8_t single_step(uint64_t address);
+
+void initialize_ud(ud_t* ud_obj);
 
 void test_malloc();
 
