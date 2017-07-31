@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <link.h>
 #include <unistd.h>
+#include <ucontext.h>
 
 #include <sys/mman.h>
 #include <sys/types.h>
@@ -18,10 +19,10 @@
 
 #include <sstream>
 #include <string>
-#include <fstream>
 #include <iostream>
 
 #include <cstdlib>
+#include <cstdio>
 
 #define MAX_POWERZONES 128
 #define MAX_ENERGY_READING 128
@@ -349,10 +350,10 @@ typedef struct {
 
 extern uint64_t func_address; //the address of the target function
 
-extern fstream return_file;
-extern fstream write_file;
-extern fstream sys_file;
-extern fstream ret_addr_file;
+extern FILE* return_file;
+extern FILE* write_file;
+extern FILE* sys_file;
+extern FILE* ret_addr_file;
 
 extern uint8_t start_byte; // used in analyzer
 
@@ -374,5 +375,9 @@ uint8_t single_step(uint64_t address);
 void test_malloc();
 
 void check_self_maps();
+
+void debug_registers(ucontext_t* context);
+
+void writef(char* data, size_t size, FILE* file);
 
 #endif

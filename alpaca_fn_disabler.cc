@@ -61,6 +61,13 @@ uint64_t writes[MAX_WRITES];
 size_t writes_index = 0;
 size_t writes_filled = 0;
 
+// start bytes of 0xCC interrupted syscalls
+uint8_t start_bytes[MAX_SYSCALLS + MAX_RETURNS];
+size_t start_bytes_index = 0;
+size_t start_bytes_filled = 0;
+
+uint64_t* stack_base2; //the beginning of the stack for the targeted function
+
 void mimic_write();
 bool mimic_syscall();
 
@@ -77,11 +84,11 @@ void disabled_fn() {
   
   for(int i = 0; i < count; i++) {
     if (flags_index >= flags_filled) {
-      cerr << "Overflowing the write/syscall flags array\n";
+            cerr << "Overflowing the write/syscall flags array (flags_index: " << flags_index << ", flags_filled: " << flags_filled << ")\n";
       exit(2);
     }
 
-    DEBUG("Popping a write/syscall flag bit");
+    DEBUG("Popping a write/syscall flag bit (flags_index: " << flags_index << ")");
     bool flag = flags[flags_index++];
     if(flag) {
       DEBUG("Flag is a write (" << flag << ")");
@@ -103,10 +110,26 @@ void disabled_fn() {
   ret_t curr_return = returns[returns_index++];
   DEBUG("Return registers flag: " << (int)curr_return.flag);
   
-  if(curr_return.flag & 0b00001000) { DEBUG("XMM1: " << int_to_hex(curr_return.xmm1[0]) << ", " << int_to_hex(curr_return.xmm1[1])
-                                            << ", " << int_to_hex(curr_return.xmm1[2]) << ", " << int_to_hex(curr_return.xmm1[3])); }
-  if(curr_return.flag & 0b00000100) { DEBUG("XMM0: " << int_to_hex(curr_return.xmm0[0]) << ", " << int_to_hex(curr_return.xmm0[1])
-                                            << ", " << int_to_hex(curr_return.xmm0[2]) << ", " << int_to_hex(curr_return.xmm0[3])); }
+  if(curr_return.flag & 0b00001000) {
+          DEBUG("XMM1: " << curr_return.xmm1[0] << ", " << curr_return.xmm1[1]
+                         << ", " << curr_return.xmm1[2] << ", " << curr_return.xmm1[3]);
+          for(int i = 0; i < 4; i++) {
+                  for(int j = 0; j < 4; j++) {
+                          uint8_t* bytes = (uint8_t*) &curr_return.xmm1;
+                          DEBUG("XMM1 part " << i << " at " << j << " is " << int_to_hex((uint64_t)bytes[i]));
+                  }
+          }
+  }
+  if(curr_return.flag & 0b00000100) {
+          DEBUG("XMM0: " << curr_return.xmm0[0] << ", " << curr_return.xmm0[1]
+                         << ", " << curr_return.xmm0[2] << ", " << curr_return.xmm0[3]);
+          for(int i = 0; i < 4; i++) {
+                  for(int j = 0; j < 4; j++) {
+                          uint8_t* bytes = (uint8_t*) &curr_return.xmm0;
+                          DEBUG("XMM0 part " << i << " at " << j << " is " << int_to_hex((uint64_t)bytes[i]));
+                  }
+          }
+  }
         
   if(curr_return.flag & 0b00000010) { DEBUG("RDX: " << int_to_hex(curr_return.rdx)); }
   if(curr_return.flag & 0b00000001) { DEBUG("RAX: " << int_to_hex(curr_return.rax)); }
@@ -180,7 +203,11 @@ void mimic_write() {
   uint64_t* memory_dest = (uint64_t*) writes[writes_index++];
   DEBUG("Getting the value at destination " << memory_dest);
   uint64_t val = writes[writes_index++];
-  DEBUG("The value at " << memory_dest << " is " << val);
+  DEBUG("The value at " << memory_dest << " is " << int_to_hex(val));
+
+  for (int i = 0; i < 8; i++) {
+    DEBUG("Byte " << i << ": " << int_to_hex((uint64_t)((uint8_t*)&val)[i]));
+  }
 
   *memory_dest = val;
   DEBUG("Finished mimicing a write");
@@ -189,7 +216,7 @@ void mimic_write() {
 void read_syscalls(){
   DEBUG("Reading in syscalls");
   uint64_t buffer; 
-  while(sys_file.read((char*) &buffer, sizeof(uint64_t))) {
+  while(fread((char*) &buffer, sizeof(uint64_t), 1, sys_file)) {
     if (syses_filled >= MAX_SYSCALLS) {
       cerr << "Overflowing the syscalls array!\n";
       exit(2);
@@ -206,12 +233,12 @@ void read_syscalls(){
 
     DEBUG("Reading " << num_params << " parameters");
     for (int i = 0; i < num_params; i++) {
-      sys_file.read((char*) &buffer, sizeof(uint64_t));
+      fread((char*) &buffer, sizeof(uint64_t), 1, sys_file);
       DEBUG("Read in parameter " << i << ":" << buffer);
       syses[syses_filled++] = buffer;
     }
     DEBUG("Reading the syscall return value");
-    sys_file.read((char*) &buffer, sizeof(uint64_t));
+    fread((char*) &buffer, sizeof(uint64_t), 1, sys_file);
     DEBUG("Read the return value: " << buffer);
     syses[syses_filled++] = buffer;
   }
@@ -226,7 +253,7 @@ void read_writes() {
   DEBUG("Reading in writes");
   
   uint64_t buffer;
-  while (write_file.read((char*) &buffer, sizeof(uint64_t))) {
+  while (fread((char*) &buffer, sizeof(uint64_t), 1, write_file)) {
     if (writes_filled >= MAX_WRITES) {
       cerr << "Overflowing the writes array!\n";
       exit(2);
@@ -236,6 +263,134 @@ void read_writes() {
   }
 
   DEBUG("Finished reading in writes");
+}
+
+void trap_register_handler(int signal, siginfo_t* info, void* cont) {
+  DEBUG("Trap handler triggered");
+  if (signal != SIGTRAP) {
+    cerr << "Signal received was not a SIGTRAP: " << signal << "\n";
+    exit(2);
+  }
+
+  //used to keep track of the stack manipulation 
+  static bool first_run = true;
+  static bool return_reached = false;
+  static int call_count = 0;
+  static ud_t ud_obj;
+  static bool non_regular_start = false;
+
+  static uint8_t* instr_first_byte = (uint8_t*)func_address;
+  static unsigned int function_start_counter = 0;
+  static uint64_t ret_addr = 0; //ret addr logging 
+  
+  uint64_t* rsp;
+
+  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+
+  debug_registers(context);
+
+  if (start_byte == 0x55) {
+    if (first_run) {
+      DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
+      
+      DEBUG("Function starting byte is 0x55");
+      DEBUG("Initializing stack base");
+      //Faking the %rbp stack push to account for the 0xCC byte overwrite
+      stack_base2 = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
+      uint64_t frame = (uint64_t)context->uc_mcontext.gregs[REG_RBP];
+
+      DEBUG("Stack base is " << stack_base2);
+
+      stack_base2--;
+      *stack_base2 = frame;
+      context->uc_mcontext.gregs[REG_RSP] = (uint64_t)stack_base2;
+
+      initialize_ud(&ud_obj);
+
+      first_run = false;
+      instr_first_byte[0] = start_byte;
+    }
+  }  else {
+    non_regular_start = true;
+    DEBUG("Function starting byte is irregular: " << int_to_hex(start_byte));
+    
+    
+    if (first_run) {
+      DEBUG_CRITICAL("Target function called (" << function_start_counter++ << ")");
+      
+      DEBUG("Subtracted RIP with value " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << " to account for the 0xCC overwrite");
+
+      stack_base2 = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
+      DEBUG("Stack base is " << int_to_hex((uint64_t) stack_base2));
+
+      instr_first_byte[0] = start_byte; //save the original byte
+      DEBUG("Restoring " << int_to_hex(start_byte) << " to first byte " << int_to_hex((uint64_t) instr_first_byte));
+      context->uc_mcontext.gregs[REG_RIP]--; //rerun the current instruction 
+      
+      initialize_ud(&ud_obj);
+      first_run = false;
+
+    }
+  }
+
+  //if end of a function is reached in the next step  
+  if (return_reached) {
+    DEBUG("The last instruction was a return");
+    call_count--;
+    return_reached = false;
+
+    if(call_count < 0) {
+      DEBUG_CRITICAL("The target function has returned");
+      
+      DEBUG("Stopping single stepping");
+      //stops single-stepping
+      context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+
+      DEBUG("Enabling single step once the target function is called again");
+      start_byte = single_step(func_address);
+      
+      DEBUG("Resetting static variables");
+      // reset for next time target function is called
+      non_regular_start = false; 
+      first_run = true;
+      call_count = 0;
+
+      DEBUG("Finished resetting static variables");
+
+     return;
+    }
+  }
+
+  DEBUG("Setting input buffer");
+  //grabs next instruction to disassemble 
+  ud_set_input_buffer(&ud_obj, (uint8_t*) context->uc_mcontext.gregs[REG_RIP], 18);
+  DEBUG("Input set, disassembling");
+  ud_disassemble(&ud_obj);
+  DEBUG("Instruction disassembled");
+
+  DEBUG("Instruction at " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << ": " << ud_insn_asm(&ud_obj));
+  
+  switch (ud_insn_mnemonic(&ud_obj)) {
+  case UD_Iret: case UD_Iretf:
+    DEBUG("Special case: ret (call count is " << call_count << ")");
+    ret_addr = context->uc_mcontext.gregs[REG_RIP]; //ret addr logging
+    rsp = (uint64_t*) context->uc_mcontext.gregs[REG_RSP];
+    DEBUG("Will return to " << int_to_hex(*rsp) << " (" << int_to_hex((uint64_t) rsp) << ")");
+    return_reached = true;
+    break;
+  case UD_Icall:
+    DEBUG("Special case: call");
+    call_count++;
+    break;
+  default:
+    break;
+  }
+
+  DEBUG("Continuing to single step");
+  //set TRAP flag to continue single-stepping
+  context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
+
+  DEBUG("Finished trap handler");
 }
 
 void check_bytes(uint8_t* addr, uint8_t expected[8], uint8_t* cmp_addr, bool overlaps[8], int index) {
@@ -276,11 +431,11 @@ bool cmp_bytes(uint8_t* address, uint8_t* expected, bool overlaps[8]) {
   return diff;
 }
 
-bool check_write(int index, int num_writes, ucontext_t* context) {
-   DEBUG("Checking nth write: " << ((writes_index + (index * 2)) / 2) << " (nth in fn call: " << index << ")");
+bool check_write(int writes_upper, int writes_lower, ucontext_t* context) {
+   DEBUG("Checking nth write: " << (writes_lower * 2));
    DEBUG("RAX is: " << int_to_hex(context->uc_mcontext.gregs[REG_RAX]));
-   uint8_t* address = (uint8_t*) writes[writes_index + (index*2)];
-   uint8_t* expected = (uint8_t*) &writes[writes_index + (index*2) + 1];
+   uint8_t* address = (uint8_t*) writes[writes_lower * 2];
+   uint8_t* expected = (uint8_t*) &writes[writes_lower * 2 + 1];
    uint64_t expected64 = *((uint64_t*)expected);
    bool overlaps[8] = {false};
 
@@ -291,7 +446,7 @@ bool check_write(int index, int num_writes, ucontext_t* context) {
 
    DEBUG("Comparing with later writes");
    uint8_t* cmp_addr;
-   for (int i = num_writes-1; i > index; i--) {
+   for (int i = writes_upper; i > writes_lower; i--) {
      DEBUG("Comparing with write " << i);
      cmp_addr = (uint8_t*)writes[writes_index + i * 2];
      DEBUG("The comparison address range is " << int_to_hex((uint64_t)cmp_addr) << " to " << int_to_hex((uint64_t)cmp_addr + 8));
@@ -374,8 +529,20 @@ void trap_ret_addrs(){
   DEBUG("Setting up trap handlers for return addresses");
   for (int i = 0; i < ret_addrs_filled; i++) {
     uint64_t address = ret_addrs[i];
-    DEBUG("Setting up trap handler at the return instruction: " << int_to_hex(address));
-    single_step(address);
+    bool already_trapped = false;
+    for(int n = 0; n < i; n++) {
+      if(ret_addrs[n] == ret_addrs[i]) {
+        DEBUG("Already set trap at this address (the " << n << "th trap), skipping");
+        start_bytes[start_bytes_filled] = start_bytes[n];
+        already_trapped = true;
+        break;
+      }
+    }
+    if(!already_trapped) {
+      DEBUG("Setting up trap handler at the return/syscall instruction: " << int_to_hex(address));
+      start_bytes[start_bytes_filled] = single_step(address);
+    }
+    start_bytes_filled++;
   }
   DEBUG("Finished setting up trap handlers for return addresses");
 }
@@ -387,7 +554,34 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
     exit(2);
   }
 
-  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+  static ud_t ud_obj;
+  static bool first_run = true;
+  static size_t total_func_writes = 0;
+  static size_t writes_lower = 0; // saved from last syscall/return
+  // syscall indices array
+  static size_t sys_indices[MAX_SYSCALLS];
+  static size_t sys_indices_index = 0;
+  static size_t sys_indices_filled = 0;
+  static bool repeat_syscall = false; 
+
+  if(first_run) {
+    initialize_ud(&ud_obj);
+
+    //for return upper bound number of writes
+    if (write_syscall_counts_index >= write_syscall_counts_filled) {
+      cerr << "Overflowing write/syscall counts array at " << write_syscall_counts_index << " (cap: " << write_syscall_counts_filled << ")!\n";
+      exit(2);
+    }
+    DEBUG("Popping a write/syscall count");
+    uint64_t count = write_syscall_counts[write_syscall_counts_index++];
+    DEBUG("There are " << count << " writes/syscalls in this function invocation");
+    
+    for(size_t i = 0; i < flags_filled; i++) {
+      if (!flags[i]) {
+        sys_indices[sys_indices_filled] = i;
+        sys_indices_filled++; 
+      } else total_func_writes++; 
+    }
 
   DEBUG("%r13: " << int_to_hex(*(uint64_t*)context->uc_mcontext.gregs[REG_R13]));
   if (write_syscall_counts_index >= write_syscall_counts_filled) {
@@ -395,9 +589,20 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
      exit(2);
   }
   
-  DEBUG("Popping a write/syscall count");
-  uint64_t count = write_syscall_counts[write_syscall_counts_index++];
-  DEBUG("There are " << count << " writes/syscalls in this function invocation");
+  ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
+
+  if (repeat_syscall) {
+    single_step(context->uc_mcontext.gregs[REG_RIP] - 1);
+    repeat_syscall = false;
+    context->uc_mcontext.gregs[REG_EFL] &= ~(1LL << 8);
+    return;
+  }
+  
+  ret_addrs_index++;
+  DEBUG("Ret_addrs index incremented; current value: " << ret_addrs_index);
+
+  DEBUG("%r13: " << int_to_hex(*(uint64_t*)context->uc_mcontext.gregs[REG_R13]));
+  context->uc_mcontext.gregs[REG_RIP]--; // move back to the trapped instruction
 
   if (flags_index + count > flags_filled) {
     cerr << "Overflowing the write/syscall flags array (flags_index: " << flags_index << ", flags_filled: " << flags_filled << ")\n";
@@ -426,8 +631,11 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
       DEBUG("First write did not pass!");
     } else {
       DEBUG("First write passed, checking remaining writes");
-      for(int i = num_writes - 2; i >= 0; i--) {
-              if (check_write(i, num_writes, context)) DEBUG("Writes did not pass!");
+      if (num_writes > 1) {
+        for(int i = writes_upper - 1; i >= writes_lower && i < writes_upper; i--) { //underflow, watch out
+          DEBUG("i is " << i << " and write_index is " << writes_index);
+          if (check_write(writes_upper, i, context)) DEBUG("Writes did not pass!");
+        }
       }
     }
   } else {
@@ -438,11 +646,25 @@ void check_trap_handler(int signal, siginfo_t* info, void* cont) {
 
   flags_index += count;
   writes_index += num_writes * 2;
-  
-  if(check_return(context)) DEBUG("Returns did not pass!");
+   
+  if (is_return) {
+    DEBUG("Checking return values");
+    if(check_return(context)) DEBUG("Returns did not pass!");
 
-  context->uc_mcontext.gregs[REG_RIP] = *((uint64_t*)context->uc_mcontext.gregs[REG_RSP]);
-  context->uc_mcontext.gregs[REG_RSP] += 8; 
+    context->uc_mcontext.gregs[REG_RIP] = *((uint64_t*)context->uc_mcontext.gregs[REG_RSP]);
+    context->uc_mcontext.gregs[REG_RSP] += 8;
+    start_bytes_index++; 
+  } else { //putting back the original byte to perform the syscall
+    ((uint8_t*)context->uc_mcontext.gregs[REG_RIP])[0] = start_bytes[start_bytes_index++];
+    //if syscall is repeated, trap needs to be reinserted
+    for (int i = ret_addrs_index; i < ret_addrs_filled; i++) {
+      if (ret_addrs[i] == context->uc_mcontext.gregs[REG_RIP]) {
+        repeat_syscall = true;
+        context->uc_mcontext.gregs[REG_EFL] |= 1 << 8;
+        break;
+       }
+    }
+  }
 
   DEBUG("Finished check trap handler");
 }
@@ -452,8 +674,8 @@ void read_ret_addrs() {
   DEBUG("Reading in return addresses");
   
   uint64_t buffer;
-  while(ret_addr_file.read((char*)&buffer, sizeof(uint64_t))) {
-    if (ret_addrs_index >= MAX_RETURNS) {
+  while(fread((char*)&buffer, sizeof(uint64_t), 1, ret_addr_file)) {
+    if (ret_addrs_filled >= MAX_RETURNS) {
        cerr << "Overflowing the return address array!\n";
        exit(2);    
     }
@@ -472,7 +694,7 @@ void read_returns() {
   DEBUG("Reading in returns");
   
   uint64_t write_sys_count;
-  while(return_file.read((char*) &write_sys_count, sizeof(uint64_t))) {
+  while(fread((char*) &write_sys_count, sizeof(uint64_t), 1, return_file)) {
     DEBUG("Read write/syscall count: " << write_sys_count);
 
     if (write_syscall_counts_filled >= MAX_RETURNS) {
@@ -485,7 +707,7 @@ void read_returns() {
     for (int i = 0; i < (write_sys_count/8) + 1; i++) {
       uint8_t buf;
       DEBUG("Reading in a byte");
-      return_file.read((char*) &buf, sizeof(uint8_t));
+      fread((char*) &buf, sizeof(uint8_t), 1, return_file);
 
       bitset<8> byte(buf); 
       for (int j = 0; j < 8 && j + i * 8 < write_sys_count; j++) {
@@ -500,30 +722,51 @@ void read_returns() {
 
     ret_t return_struct;
     DEBUG("Reading return registers flag");
-    return_file.read((char*) &return_struct.flag, 1);
+    fread((char*) &return_struct.flag, 1, 1, return_file);
     DEBUG("Flag is: " << (int)return_struct.flag);
 
     if(return_struct.flag & 0b00000001) {
       DEBUG("Reading RAX");
-      return_file.read((char*) &return_struct.rax, 8);
+      fread((char*) &return_struct.rax, 8, 1, return_file);
       DEBUG("RAX is " << int_to_hex(return_struct.rax));
     }
     if(return_struct.flag & 0b00000010) {
       DEBUG("Reading RDX");
-      return_file.read((char*) &return_struct.rdx, 8);
+      fread((char*) &return_struct.rdx, 8, 1, return_file);
       DEBUG("RDX is " << int_to_hex(return_struct.rdx));
     }
 
     if(return_struct.flag & 0b00000100) {
       DEBUG("Reading XMM0");
-      for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm0[i], 4);
-      DEBUG("XMM0 is " << return_struct.xmm0[0] << ", " << return_struct.xmm0[1] << ", " << return_struct.xmm0[2] << ", " << return_struct.xmm0[3]);
+      for (int i = 0; i < 4; i ++) {
+        uint8_t xmm0[4];
+        fread((char*) xmm0, 4, 1, return_file);
+        for(int j = 0; j < 4; j++) {
+          DEBUG("XMM0 part " << i << " at " << j << " is " << int_to_hex((uint64_t) xmm0[j]));
+        }
+
+        return_struct.xmm0[i] = ((float*)xmm0)[0];
+        DEBUG("Saved xmm0 value in return struct: "<<  ((float*)xmm0)[0]);
+      }
+      for(int i = 0; i < 4; i++) {
+        DEBUG("XMM0 at " << i << " is " << return_struct.xmm0[i]);
+      }
     }
 
     if(return_struct.flag & 0b00001000) {
       DEBUG("Reading XMM1");
-      for (int i = 0; i < 4; i ++) return_file.read((char*) &return_struct.xmm1[i], 4);
-      DEBUG("XMM1 is " << return_struct.xmm1[0] << ", " << return_struct.xmm1[1] << ", " << return_struct.xmm1[2] << ", " << return_struct.xmm1[3]);
+      for (int i = 0; i < 4; i ++) {
+        uint8_t xmm1[4];
+        fread((char*) xmm1, 4, 1, return_file);
+        for(int j = 0; j < 4; j++) {
+          DEBUG("XMM1 part " << i << " at " << j << " is " << int_to_hex((uint64_t) xmm1[j]));
+        }
+        return_struct.xmm1[i] = ((float*)xmm1)[0];
+        DEBUG("Saved xmm1 value in return struct: "<<  ((float*)xmm1)[0]);
+      }
+      for(int i = 0; i < 4; i++) {
+        DEBUG("XMM1 at " << i << " is " << return_struct.xmm1[i]);
+      }
     }
 
     if (returns_filled >= MAX_RETURNS) {
