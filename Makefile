@@ -8,5 +8,5 @@ minlog: alpaca_shared.cc alpaca_no2.cc alpaca_fn_disabler.cc
 	clang++ -D MINDEBUG alpaca_shared.cc alpaca_no2.cc alpaca_fn_disabler.cc -g --std=c++11 -mcmodel=large -rdynamic -shared -fPIC -o alpaca.so -ldl -ludis86
 
 check: all
-	gcc test-suite.c -g -o test-suite
+	clang test-suite.c -g -O3 -femulated-tls -static-libgcc -o test-suite
 	python run-tests.py

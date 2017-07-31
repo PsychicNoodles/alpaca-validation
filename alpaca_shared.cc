@@ -10,10 +10,10 @@ uint64_t offset;
 
 uint64_t func_address; //the address of the target function
 
-fstream return_file;
-fstream write_file;
-fstream sys_file;
-fstream ret_addr_file;
+FILE* return_file;
+FILE* write_file;
+FILE* sys_file;
+FILE* ret_addr_file;
 
 //the byte overwrtitten with 0xCC for single-stepping, used in analyzer
 uint8_t start_byte;
@@ -23,8 +23,8 @@ uint64_t wrong_writes;
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
-#define OUT_FMODE fstream::out | fstream::trunc | fstream::binary
-#define IN_FMODE fstream::in | fstream::binary
+#define OUT_FMODE "wb"
+#define IN_FMODE "rb"
 
 
 /**
@@ -39,20 +39,14 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 
   fprintf(stderr, "in SEG handler\n");
   fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
-  exit(3);
+  while(1){}
   int j, nptrs; 
   void* buffer[200];
   char** strings;
-  signal(sig, SIG_DFL);
+//  signal(sig, SIG_DFL);
   nptrs = backtrace(buffer, 200);
 
-  backtrace_symbols_fd(buffer, nptrs, STDOUT_FILENO);
-  printf("~~~\n");
-
-  void* bt[1];
-  bt[0] = (void*) ((ucontext_t*) context)->uc_mcontext.gregs[REG_RIP];
-
-  backtrace_symbols_fd(bt, 1, STDOUT_FILENO);
+  backtrace_symbols_fd(buffer, nptrs, STDERR_FILENO);
 }
 
 void setup_segv_handler() {
@@ -91,13 +85,30 @@ uint8_t single_step(uint64_t address) {
   return start_byte;
 }
 
+void setup_alt_stack() {
+  stack_t ss;
+
+  ss.ss_sp = malloc(SIGSTKSZ);
+  if (ss.ss_sp == NULL) {
+    cerr << "Could not set up alt stack, ss_sp is null!\n";
+    exit(3);
+  }
+  ss.ss_size = SIGSTKSZ;
+  ss.ss_flags = 0;
+  if (sigaltstack(&ss, NULL) == -1) {
+    cerr << "Could not set up alt stack, sigaltstack returned -1!\n";
+    exit(3);
+  }
+}
+
 void setup_analyzer() {
   struct sigaction sig_action;
   memset(&sig_action, 0, sizeof(sig_action));
   sig_action.sa_sigaction = trap_handler;
   sigemptyset(&sig_action.sa_mask);
-  sig_action.sa_flags = SA_SIGINFO;
+  sig_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigaction(SIGTRAP, &sig_action, 0);
+  setup_alt_stack();
 
   start_byte = single_step(func_address);
 }
@@ -114,8 +125,12 @@ void setup_check() {
   memset(&sig_action, 0, sizeof(sig_action));
   sig_action.sa_sigaction = check_trap_handler;
   sigemptyset(&sig_action.sa_mask);
-  sig_action.sa_flags = SA_SIGINFO;
+  sig_action.sa_flags = SA_SIGINFO | SA_ONSTACK;
   sigaction(SIGTRAP, &sig_action, 0);
+  setup_alt_stack();
+
+  start_byte = single_step(func_address);
+
 
   read_syscalls();
   read_writes();
@@ -123,35 +138,38 @@ void setup_check() {
   read_ret_addrs();
 }
 
-void open_logs(fstream::openmode mode) {
-  return_file.open("return-logger", mode);
-  if(return_file.fail()) {
+void open_logs(const char* mode) {
+  return_file = fopen("return-logger", mode);
+  if(return_file == NULL) {
     cerr << "Error opening return log: " << strerror(errno);
     exit(4);
   }
-  write_file.open("write-logger", mode);
-  if(write_file.fail()) {
+  setbuf(return_file, NULL);
+  write_file = fopen("write-logger", mode);
+  if(write_file == NULL) {
     cerr << "Error opening write log: " << strerror(errno);
     exit(4);
   }
-  sys_file.open("sys-logger", mode);
-  if(sys_file.fail()) {
+  setbuf(return_file, NULL);
+  sys_file = fopen("sys-logger", mode);
+  if(sys_file == NULL) {
     cerr << "Error opening sys log: " << strerror(errno);
     exit(4);
   }
-  ret_addr_file.open("ret-addr-logger", mode);
-  if(ret_addr_file.fail()) {
+  setbuf(sys_file, NULL);
+  ret_addr_file = fopen("ret-addr-logger", mode);
+  if(ret_addr_file == NULL) {
     cerr << "Error opening ret-addr log: " << strerror(errno);
     exit(4);
   }
-  
+  setbuf(ret_addr_file, NULL);
 }
 
 void check_self_maps() {
   char self_maps[1024*1024] = {0};
-  ifstream self_maps_f("/proc/self/maps");
-  self_maps_f.read(self_maps, 1024*1024);
-  self_maps_f.close();
+  FILE* self_maps_f = fopen("/proc/self/maps", "r");
+  fread(self_maps, 1024*1024, 1, self_maps_f);
+  fclose(self_maps_f);
   cerr << self_maps << "\n";
 }
 
@@ -166,7 +184,11 @@ void test_malloc(){
 }
 
 static int wrapped_main(int argc, char** argv, char** env) {
-        //test_malloc();      
+        //test_malloc();
+        DEBUG("Alpaca started, waiting for user input to continue");
+        char *getline_buf = NULL;
+        size_t getline_size;
+        getline(&getline_buf, &getline_size, stdin);
   DEBUG("Entered Alpaca's main");
   setup_segv_handler();
   wrong_writes = 0;
@@ -211,6 +233,8 @@ static int wrapped_main(int argc, char** argv, char** env) {
     exit(2);
   }
 
+  DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
+
   /**
   DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
@@ -234,12 +258,14 @@ static int wrapped_main(int argc, char** argv, char** env) {
   //test_malloc();
   check_self_maps();
   cerr << "Wrong writes: " << wrong_writes << "\n";
+
+    DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
   
   //test_malloc();
-  return_file.close();
-  write_file.close();
-  sys_file.close();
-  ret_addr_file.close();
+  //fclose(return_file);
+  //fclose(write_file);
+  //fclose(sys_file);
+  //fclose(ret_addr_file);
   
   //test_malloc();
   return main_return;
@@ -317,10 +343,10 @@ uint64_t find_address(const char* file_path, string func_name) {
 
 int file_readline(char path[], char contents[], int max) {
   memset(contents, 0, max);
-  ifstream in(path);
-  in.read(contents, max);
+  FILE* in = fopen(path, "r");
+  int count = fread(contents, max, 1, in);
   *strstr(contents, "\n") = '\0';
-  return in.gcount();
+  return count;
 }
 
 /**
@@ -406,7 +432,7 @@ void initialize_ud(ud_t* ud_obj) {
   ud_init(ud_obj);
   ud_set_mode(ud_obj, 64);
   ud_set_syntax(ud_obj, UD_SYN_ATT);
-  ud_set_vendor(ud_obj, UD_VENDOR_INTEL);
+  ud_set_vendor(ud_obj, UD_VENDOR_ANY);
   DEBUG("Finished initializing the udis86 object");
 }
 
@@ -417,19 +443,38 @@ char* int_to_hex(uint64_t i) {
   return buf;
 }
 
-INTERPOSE (exit)(int rc) {
-  cerr << "Program exited through exit() function\n";
-  real::exit(rc);
+void debug_registers(ucontext_t* context) {
+        DEBUG("Debugging registers");
+        int regs[] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI,
+                           REG_RDI, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
+        const char* reg_n[] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8",
+                         "r9", "r10", "r11", "r12", "r13", "r14", "r15"};
+        for(int i = 0; i < 16; i++) {
+                char buf[256];
+                snprintf(buf, 256, "Value of %s: %s\n", reg_n[i], int_to_hex((uint64_t)context->uc_mcontext.gregs[regs[i]]));
+                fputs(buf, stderr);
+        }
+;
+        const char* fpreg_n[] = {"xmm0", "xmm1"};
+        for (int i = 0; i < 2; i++) {
+                for (int j = 0; j < 16; j++) {
+                        char buf[256];
+                        snprintf(buf, 256, "Value of %s at byte %d: %hhu\n", fpreg_n[i], j, ((uint8_t*)context->uc_mcontext.fpregs->_xmm[i].element)[j]);
+                        fputs(buf, stderr);
+                }
+        }
 }
 
-INTERPOSE (_exit)(int rc) {
-  cerr << "Program exited through _exit() function\n";
-  real::_exit(rc); 
-}
-
-INTERPOSE (_Exit)(int rc) {
-  cerr << "Program exited through _Exit() function\n";
-  real::_Exit(rc); 
+void writef(char* data, size_t size, FILE* file) {
+        char fname[256];
+        uint64_t rf = (uint64_t) return_file, wf = (uint64_t) write_file, sf = (uint64_t) sys_file, raf = (uint64_t) ret_addr_file, f = (uint64_t) file;
+        if(f == rf) strcpy(fname, "return_file");
+        else if(f == wf) strcpy(fname, "write_file");
+        else if(f == sf) strcpy(fname, "sys_file");
+        else if(f == raf) strcpy(fname, "ret_addr_file");
+        for(int i = 0; i < size; i++) DEBUG("Data: " << int_to_hex((uint64_t)data[i]));
+        DEBUG("Data to " << fname << " as uint64_t: " << int_to_hex(*(uint64_t*)data));
+  for(int i = 0; i < size; i++) DEBUG("fputc wrote " << fputc(data[i], file) << " (data[" << i << "])");
 }
 
 

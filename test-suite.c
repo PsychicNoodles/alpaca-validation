@@ -43,11 +43,11 @@ typedef struct {
 typedef struct {
   bool a;
   short b;
-  int c;
   long d;
+  double g;
   long long e;
   float f;
-  double g;
+  int c;
 } everything_t;
 
 typedef struct {
@@ -61,6 +61,25 @@ typedef struct {
   double b;
   double c;
 } triple_double_t;
+
+typedef struct {
+  long long a;
+  long long b;
+  long long c;
+  long long d;
+  long long e;
+  long long f;
+  long long g;
+  long long h;
+  long long i;
+  long long j;
+  long long k;
+  long long l;
+  long long m;
+  long long n;
+  long long o;
+  long long p;
+} sixteen_ll_t;
 
 bool bool_func() {
   bool ret = true;
@@ -88,7 +107,7 @@ long long long_long_func() {
 }
 
 float float_func() {
-  float ret = 6.0;
+  float ret = -12345.6;
   return ret;
 }
 
@@ -167,28 +186,36 @@ pointer_t pointer_func() {
   ret.b = 31.0;
   ret.c = (char*) malloc(sizeof(char) * 9);
   ret.c[0] = 't';
-  ret.c[0] = 'e';
-  ret.c[0] = 's';
-  ret.c[0] = 't';
-  ret.c[0] = 't';
-  ret.c[0] = 'e';
-  ret.c[0] = 's';
-  ret.c[0] = 't';
-  ret.c[0] = '\0';
+  ret.c[1] = 'e';
+  ret.c[2] = 's';
+  ret.c[3] = 't';
+  ret.c[4] = 't';
+  ret.c[5] = 'e';
+  ret.c[6] = 's';
+  ret.c[7] = 't';
+  ret.c[8] = '\0';
   
   return ret;
 }
 
+#define NUM_MALLOCS 100
 void malloc_free_func() {
-  char* a[500]; 
-  for (int i = 0; i < 500; i++) 
+  char* a[NUM_MALLOCS];
+  printf("malloced array of size %d\n", NUM_MALLOCS);
+  for (int i = 0; i < NUM_MALLOCS; i++) {
     a[i] = (char*)malloc(sizeof(char)*(i*3));
+    printf("malloced item at %d of size %d\n", i, i*3);
+  }
+  printf("finished mallocing\n");
 
-  for(int i = 0; i < 500; i++)
-     printf("malloced: %p\n", a[i]);
+  for(int i = 0; i < NUM_MALLOCS; i++)
+   printf("malloced: %p\n", a[i]);
 
-  //for (int i = 0; i < 500; i++)
-          //free(a[i]);
+  for (int i = 0; i < NUM_MALLOCS; i++) {
+   free(a[i]);
+   printf("freed item at %d\n", i);
+  }
+  printf("returning\n");
 }
 
 triple_double_t triple_double_func() {
@@ -199,10 +226,32 @@ triple_double_t triple_double_func() {
   return ret;
 }
 
-/*__int128 really_long_func() {
-  __int128 ret = 35;
+void mem_cpy_func(char arr1[], char arr2[], int size) {
+  memcpy(arr1, arr2, size);
+  return;
+}
+
+sixteen_ll_t sixteen_ll_func() {
+  sixteen_ll_t ret;
+  ret.a = 123456;
+  ret.b = 234567;
+  ret.c = 345678;
+  ret.d = 456789;
+  ret.e = 5678910;
+  ret.f = 67891011;
+  ret.g = 789101112;
+  ret.h = 8910111213;
+  ret.i = 91011121314;
+  ret.j = 101112131415;
+  ret.k = 111213141516;
+  ret.l = 121314151617;
+  ret.m = 131415161718;
+  ret.n = 141516171819;
+  ret.o = 151617181920;
+  ret.p = 161718192021;
   return ret;
-  }*/
+}
+
 
 int global_a;
 double global_b;
@@ -222,6 +271,11 @@ int* mmap_func() {
   int* ptr = (int*) mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   *ptr = 1234;
   return ptr;
+}
+
+#define MAX_PRINTFS 100
+void printf_func() {
+  for(int i = 0; i < MAX_PRINTFS; i++) printf("printf %d\n", i);
 }
 
 bool cmp(char* test1, char* test2) {
@@ -261,6 +315,12 @@ int main(int argc, char** argv) {
     mixed_t ret = mixed_func();
     printf("%d %d %.1lf\n", ret.a, ret.b, ret.c);
   }
+  if(cmp(argv[1], "mem_cpy")) {
+    char* arr1 = "abcdefghijklmnopqrstuvwxyz";
+    char arr2[28];
+    mem_cpy_func(arr2, arr1, 28);
+    printf("%s\n", arr2);
+  }
   if(cmp(argv[1], "eight_int")) {
     eight_int_t ret = eight_int_func();
     printf("%d %d %d %d %d %d %d %d\n", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g, ret.h);
@@ -275,7 +335,7 @@ int main(int argc, char** argv) {
   }
   if(cmp(argv[1], "malloc_free")) {
     malloc_free_func();
-    //printf("0\n");
+    printf("0\n");
   }
   if(cmp(argv[1], "triple_double")) {
     triple_double_t ret = triple_double_func();
@@ -301,6 +361,11 @@ int main(int argc, char** argv) {
     int* ret = mmap_func();
     printf("%d\n", *ret);
   }
-  //how print
-  //if(cmp(argv[1], "reallylong")) printf("really_long_func: %lld\n", really_long_func());
+  if(cmp(argv[1], "sixteen_ll")) {
+          sixteen_ll_t ret = sixteen_ll_func();
+          printf("%lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g, ret.h, ret.i, ret.j, ret.k, ret.l, ret.m, ret.n, ret.o, ret.p);
+  }
+  if(cmp(argv[1], "printf")) {
+          printf_func();
+  }
 }

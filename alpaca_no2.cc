@@ -32,6 +32,8 @@
 using namespace std;
 
 uint64_t mem_writing; //the destination address of an instruction that writes
+bool large_write; // for 128-bit writes (xmm registers)
+bool large_large_write; //for 256-bit writes(ymm registers AVX)
 uint64_t* stack_base; //the beginning of the stack for the targeted function
 
 //keep track of the detected writes and syscall of the function 
@@ -54,8 +56,8 @@ const ud_type_t syscall_params[6] = {UD_R_RDI, UD_R_RSI, UD_R_RDX, UD_R_R10, UD_
 uint64_t get_register(ud_type_t obj, ucontext_t* context);
 uint32_t* get_fp_register(ud_type_t obj, ucontext_t* context);
 bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context);
-void log_write(uint64_t dest_address);
-void test_operand(ud_t* obj, int n);
+void log_write(uint64_t dest_address, bool large_write, bool large_large_write);
+void test_operand(ud_t* obj, int n, int num_op, ucontext_t* context);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 void log_syscall(uint64_t sys_num, ucontext_t* context);
 void log_sys_ret(uint64_t ret_value_reg);
@@ -91,15 +93,26 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
     offset = 0;
   }
 
+  uint8_t scale = 0;
   size_t base = get_register(op->base, context);
+  if (op->index != UD_NONE) {
+     if (op->scale == 0) scale = 1;
+     else scale = op->scale;
+  }
   size_t index = get_register(op->index, context);
-  uint8_t scale = op->scale;
+
   DEBUG("Offset: " << int_to_hex(offset) << ", base: " << int_to_hex(base) << ", index: " << index << ", scale: " << (int) scale);
   DEBUG("Finished finding destination: " << int_to_hex((uint64_t) (offset + base + (index * scale))));
   //calculating the memory address based on assembly register information 
   return (uint64_t) (offset + base + (index * scale)); 
 }
 
+void handle_push(ud_t* obj, ucontext_t* context) {
+  const ud_operand_t* op = ud_insn_opr(obj, 0);      
+  uint64_t reg_val = get_register(op->base, context);
+  DEBUG("Handling a push, register value: " << int_to_hex(reg_val));
+  mem_writing = context->uc_mcontext.gregs[REG_RSP]-8;
+}
 
 /**
  *Detects the operand type which can be a memory or a register
@@ -107,7 +120,7 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
  *if it is a register and a return register then mark it as touched 
  */
 
-void test_operand(ud_t* obj, int n, ucontext_t* context) {
+void test_operand(ud_t* obj, int n, int num_op, ucontext_t* context) {
   DEBUG("Testing operand " << n);
         
   const ud_operand_t* op = ud_insn_opr(obj, n);
@@ -128,7 +141,13 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
     else {
       DEBUG("Operand may write, saving the destination address");
       DEBUG("Address is " << int_to_hex(mem_address) << ", asm is " << ud_insn_asm(obj));
+      if(ud_insn_mnemonic(obj) == UD_Icmpxchg) DEBUG("cmpxchg value: " << int_to_hex(*(uint64_t*)mem_address));
       mem_writing = mem_address;
+
+      const ud_operand_t* src_op = ud_insn_opr(obj, num_op-1);
+      if (src_op->base == UD_R_XMM0 || src_op->base == UD_R_XMM1) {
+        large_write = true;
+      }
     }
     if (op->base == UD_R_RIP) {
       DEBUG("Instruction is offset the RIP, adding the size of the instruction (" << ud_insn_len(obj) << ")");
@@ -166,7 +185,7 @@ void test_operand(ud_t* obj, int n, ucontext_t* context) {
 void log_returns(ucontext_t* context) {
   DEBUG("Logging returns");
   DEBUG("Logging count of writes/syscalls: " << write_syscall_count);
-  return_file.write((char*) &write_syscall_count, sizeof(uint64_t));
+  writef((char*) &write_syscall_count, sizeof(uint64_t), return_file);
 
   DEBUG("Logging write/syscall flag");
   //flag to switch between memory writes and syscalls
@@ -182,7 +201,7 @@ void log_returns(ucontext_t* context) {
     }
    
     DEBUG("Write/syscall flag byte: " << flag_byte);
-    return_file.write((char*)&flag_byte, 1);
+    writef((char*)&flag_byte, 1, return_file);
   }
 
   uint8_t reg_flag = 0; 
@@ -192,7 +211,7 @@ void log_returns(ucontext_t* context) {
   }
 
   DEBUG("Logging register flag: " << (int) reg_flag);
-  return_file.write((char*) &reg_flag, 1);
+  writef((char*) &reg_flag, sizeof(uint8_t), return_file);
 
   DEBUG("Logging return registers");
   //logging the return registers
@@ -201,13 +220,13 @@ void log_returns(ucontext_t* context) {
       if(i < 2) { //integer types
         uint64_t buf = get_register(ret_regs[i], context);
         DEBUG((i == 0 ? "RAX" : "RDX") << " register value: " << int_to_hex(buf));
-        return_file.write((char*) &buf, 8);
+        writef((char*) &buf, sizeof(uint64_t), return_file);
       } else { //floating point types
         float* buf = (float*)get_fp_register(ret_regs[i], context);
-        DEBUG((i == 2 ? "XMM0" : "XMM1") << " register values: " << int_to_hex(buf[0])
-              << ", " << int_to_hex(buf[1]) << ", " << int_to_hex(buf[2]) << ", " << int_to_hex(buf[3]));
+        DEBUG((i == 2 ? "XMM0" : "XMM1") << " register values: " << buf[0]
+              << ", " << buf[1] << ", " << buf[2] << ", " << buf[3]);
         for (int j = 0; j < 4; j++)
-          return_file.write((char*) &buf[j], sizeof(float));
+          writef((char*) &buf[j], sizeof(float), return_file);
                                 
       }
     }
@@ -219,7 +238,7 @@ void log_returns(ucontext_t* context) {
 //ret addr logging
 void log_ret_addrs(uint64_t addr) {
     DEBUG("Logging return address: " << int_to_hex(addr));
-    ret_addr_file.write((char*)&addr, sizeof(uint64_t));
+    writef((char*)&addr, sizeof(uint64_t), ret_addr_file);
 }
 
 /**
@@ -253,6 +272,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
   ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
+  debug_registers(context);
+
   
   //logging writes
   if (mem_writing != 0) {
@@ -264,8 +285,10 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     DEBUG("Last instruction was a memory write to address: " << int_to_hex(mem_writing) << " (count: " << write_count << ")");
     DEBUG("RAX is: " << int_to_hex(context->uc_mcontext.gregs[REG_RAX]));
     write_count++;
-    log_write(mem_writing);
+    log_write(mem_writing, large_write, large_large_write);
     mem_writing = 0;
+    large_write = false;
+    large_large_write = false;
   }
   
   //if the last instruction was a syscall then grab and log the return value
@@ -364,7 +387,10 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   ud_disassemble(&ud_obj);
   DEBUG("Instruction disassembled");
 
-  DEBUG("Instruction at " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << ": " << ud_insn_asm(&ud_obj));
+  DEBUG("Instruction at " << int_to_hex(context->uc_mcontext.gregs[REG_RIP]) << ": " << ud_insn_asm(&ud_obj) << " (" << ud_insn_hex(&ud_obj) << ")");
+  for(int i = 0; i < 8; i++) {
+    DEBUG("Instruction byte at " << i << ": " << int_to_hex((uint64_t)ud_insn_ptr(&ud_obj)[i]));
+  }
   //SPECIAL TEST CASE
   if(context->uc_mcontext.gregs[REG_RIP] == 0x7fff7bd1de00) check_self_maps();
 
@@ -399,7 +425,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   case UD_Ijp: case UD_Ijs: case UD_Ijz: case UD_Ilahf: case UD_Ildmxcsr:
   case UD_Ileave: case UD_Inop: case UD_Ipop: case UD_Ipopfq:
   case UD_Iprefetchnta: case UD_Iprefetcht0: case UD_Iprefetcht1:
-  case UD_Iprefetcht2: case UD_Ipush: case UD_Ipushfq: case UD_Irep:
+  case UD_Iprefetcht2: case UD_Irep:
   case UD_Irepne: case UD_Irsm: case UD_Isahf: case UD_Isetb: case UD_Isetbe:
   case UD_Isetl: case UD_Isetle: case UD_Iseto: case UD_Isetp: case UD_Isets:
   case UD_Isetz: case UD_Istmxcsr: case UD_Iverr: case UD_Iverw:
@@ -412,7 +438,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   case UD_Ifrndint: case UD_Ifsin: case UD_Ifsincos: case UD_Ifsqrt:
   case UD_Iinc: case UD_Iinvlpg: case UD_Ineg: case UD_Inot:
     DEBUG("Known potential write 1 op instruction, testing op 0");
-    test_operand(&ud_obj, 0, context);
+    test_operand(&ud_obj, 0, 1, context);
     break;
     //readonly 2 operand instructions
   case UD_Ilea: case UD_Icmp: case UD_Itest:
@@ -421,7 +447,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     //known potential writes with 2 operands
   case UD_Imov:
     DEBUG("Known potential write 2 op instruction, testing op 0");
-    test_operand(&ud_obj, 0, context);
+    test_operand(&ud_obj, 0, 2, context);
     break;
     //readonly 3 operand instructions
   case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw: case UD_Ishufps:
@@ -432,6 +458,49 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     DEBUG("Special case: syscall");
     log_syscall(context->uc_mcontext.gregs[REG_RAX], context);
     waiting_syscall = true;
+    break;
+    //special case for push 
+  case UD_Ipush:
+    DEBUG("Special case: push");
+    handle_push(&ud_obj, context);
+    break;
+  case UD_Ipushfq:
+    DEBUG("Special case: pushfq not supported yet\n");
+    exit(2);
+  case UD_Iinvalid:
+    DEBUG("Invalid instruction: udis cannot recognize it");
+    uint8_t instr[18];
+    memcpy(instr, ud_insn_ptr(&ud_obj), 18);
+    if(instr[0] == 0xc5 && (instr[1] == 0xfd || instr[1] == 0xfa || instr[1] == 0xfe) && (instr[2] == 0x6f || instr[2] == 0x7f)) {
+      DEBUG("Special case: vmovdqa");
+      DEBUG("Changing opcode bytes to act as instruction");
+
+      instr[0] = (instr[1] == 0xfd) ? 0x66 : 0xf3; //movdqa 0xfd vs. movdqu 0xfe
+      if (instr[1] == 0xfe) { 
+        DEBUG("YMM registers used");
+        large_large_write = true;
+      } else large_write = true;
+      instr[1] = 0x0f;
+      //movdqa specific with same operand ordering as vmovdqa based on 0x7f or 0x6f third byte encoding
+
+      for (int i = 0; i < 8; i++) {
+        DEBUG("Instruction byte from instr[ " << i << "] : " << int_to_hex((uint64_t)instr[i]));
+      }
+      ud_set_input_buffer(&ud_obj, &instr[0], 17);
+      ud_disassemble(&ud_obj);
+      
+      DEBUG("Updated instruction: " << ud_insn_asm(&ud_obj) << " (" << ud_insn_hex(&ud_obj) << ")");
+      for(int i = 0; i < 8; i++) {
+        DEBUG("Instruction byte at " << i << ": " << int_to_hex((uint64_t)ud_insn_ptr(&ud_obj)[i]));
+      }
+      test_operand(&ud_obj, 0, 2, context);
+    } else if (instr[0] == 0xc5 && instr[1] == 0xf8 && instr[2] == 0x77){
+      DEBUG("Special case: vzeroupper (only affects registers)");
+    } else {
+      DEBUG("Unknown invalid instruction");
+      exit(2);
+    }
+            
     break;
   default:
     DEBUG("Unknown instruction, counting operands");
@@ -451,7 +520,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     }
     else {
       DEBUG("Instruction has " << i << " operands, testing op 0");
-      test_operand(&ud_obj, 0, context);
+      test_operand(&ud_obj, 0, i, context);
     }
     break;
   }
@@ -463,7 +532,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   DEBUG("Finished trap handler");
 }
 
-void log_write(uint64_t dest_address) {
+void log_write(uint64_t dest_address, bool large_write, bool large_large_write) {
   DEBUG("Logging a write to " << int_to_hex(dest_address) << ", write/syscall count is now " << write_syscall_count + 1);
   if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
     cerr << "Overflowing write/syscall flag array!\n";
@@ -471,14 +540,29 @@ void log_write(uint64_t dest_address) {
   }
   write_syscall_flag[write_syscall_count++] = true;
 
+  if(large_write) { DEBUG("This is a large write"); }
+  if(large_large_write) { DEBUG("This is a large large write"); }
+
   DEBUG("Dereferencing destination address");
-  uint64_t val = *((uint64_t*)dest_address);
+  uint64_t val = ((uint64_t*)dest_address)[0];
 
   DEBUG("Write " << int_to_hex(val) << " to " << int_to_hex(dest_address));
         
-  write_file.write((char*) &dest_address, sizeof(uint64_t));
+  writef((char*) &dest_address, sizeof(uint64_t), write_file);
   DEBUG("Dest addr is " << int_to_hex(dest_address));
-  write_file.write((char*) &val, sizeof(uint64_t));
+  writef((char*) &val, sizeof(uint64_t), write_file);
+
+  if(large_large_write) {
+          DEBUG("Logging second part of large large write");
+          log_write(dest_address + 8, false, false);
+          DEBUG("Logging third part of large large write");
+          log_write(dest_address + 16, false, false);
+          DEBUG("Logging fourth part of large large write");
+          log_write(dest_address + 24, false, false);
+  } else if(large_write) {
+          DEBUG("Logging second part of large write");
+          log_write(dest_address + 8, false, false);
+  }
 
   DEBUG("Finished logging a write");
 }
@@ -492,7 +576,7 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
   write_syscall_flag[write_syscall_count++] = false;
 
   DEBUG("Logging the syscall address");
-  ret_addr_file.write((char*) &context->uc_mcontext.gregs[REG_RIP], sizeof(uint64_t));
+  writef((char*) &context->uc_mcontext.gregs[REG_RIP], sizeof(uint64_t), ret_addr_file);
   
   DEBUG("Looking up syscall");
   // look up syscall information in global syscalls array
@@ -501,13 +585,13 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
   DEBUG("Syscall " << syscall.name << " has " << num_params << " parameters");
 
   DEBUG("Logging syscall number");
-  sys_file.write((char*) &sys_num, sizeof(uint64_t));
+  writef((char*) &sys_num, sizeof(uint64_t), sys_file);
 
   DEBUG("Logging syscall parameters");
   for (int i = 0; i < num_params; i++) {
     uint64_t reg_val = get_register(syscall_params[i], context);
     DEBUG("Logging syscall parameter " << i << ": " << reg_val);
-    sys_file.write((char*) &reg_val, sizeof(uint64_t));
+    writef((char*) &reg_val, sizeof(uint64_t), sys_file);
   }
 
   DEBUG("Finished logging syscall");
@@ -515,7 +599,7 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
 
 void log_sys_ret(uint64_t ret_value_reg) {
   DEBUG("Logging syscall return value: " << ret_value_reg);
-  sys_file.write((char*) &ret_value_reg, sizeof(uint64_t));
+  writef((char*) &ret_value_reg, sizeof(uint64_t), sys_file);
   DEBUG("Finished logging syscall return value");
 }
 
@@ -538,6 +622,7 @@ bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
     DEBUG("The stack frame is " << int_to_hex((uint64_t) stack_base) << " to " << int_to_hex(stack_ptr));
 
     DEBUG("Finished determining if instruction is readonly: " << ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address));
+    //return false;
     return ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address); 
   }
 
