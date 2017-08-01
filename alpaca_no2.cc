@@ -471,11 +471,11 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     DEBUG("Invalid instruction: udis cannot recognize it");
     uint8_t instr[18];
     memcpy(instr, ud_insn_ptr(&ud_obj), 18);
-    if(instr[0] == 0xc5 && (instr[1] == 0xfd || instr[1] == 0xfa || instr[1] == 0xfe) && (instr[2] == 0x6f || instr[2] == 0x7f)) {
+    if(instr[0] == 0xc5 && (instr[1] == 0xfd || instr[1] == 0xf9 || instr[1] == 0xfa || instr[1] == 0xfe) && (instr[2] == 0x6f || instr[2] == 0x7f)) {
       DEBUG("Special case: vmovdqa");
       DEBUG("Changing opcode bytes to act as instruction");
 
-      instr[0] = (instr[1] == 0xfd) ? 0x66 : 0xf3; //movdqa 0xfd vs. movdqu 0xfe
+      instr[0] = (instr[1] == 0xfd || instr[1] == 0xf9) ? 0x66 : 0xf3; //movdqa 0xfd vs. movdqu 0xfe
       if (instr[1] == 0xfe) { 
         DEBUG("YMM registers used");
         large_large_write = true;

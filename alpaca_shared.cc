@@ -235,16 +235,16 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
   DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
 
-  /**
+  
   DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
   cerr << "Starting target program\n";
-  **/
+  
   //test_malloc();
   int main_return = og_main(argc, argv, env);
   //test_malloc();
-  /**
+  
   DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
   int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
@@ -253,7 +253,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   for(int i = 0; i < end_readings_num; i++) {
     cerr << end_readings[i].zone << ": " << dec << end_readings[i].energy - start_readings[i].energy << "\n";
   }
-  **/
+  
   
   //test_malloc();
   check_self_maps();
