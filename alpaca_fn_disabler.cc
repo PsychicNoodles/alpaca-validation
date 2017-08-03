@@ -97,6 +97,7 @@ void disabled_fn() {
         exit(2);
       }
     }
+    DEBUG("Finished write/syscall " << i);
   }
 
   if (returns_index >= returns_filled) {
@@ -200,7 +201,7 @@ void mimic_write() {
   uint64_t* memory_dest = (uint64_t*) writes[writes_index++];
   DEBUG("Getting the value at destination " << memory_dest);
   uint64_t val = writes[writes_index++];
-  DEBUG("The value at " << memory_dest << " is " << int_to_hex(val));
+  DEBUG("Write " << int_to_hex(val) << " to "<< int_to_hex((uint64_t)memory_dest));
 
   for (int i = 0; i < 8; i++) {
     DEBUG("Byte " << i << ": " << int_to_hex((uint64_t)((uint8_t*)&val)[i]));

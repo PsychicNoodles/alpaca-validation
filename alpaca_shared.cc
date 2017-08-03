@@ -170,7 +170,7 @@ void check_self_maps() {
   FILE* self_maps_f = fopen("/proc/self/maps", "r");
   fread(self_maps, 1024*1024, 1, self_maps_f);
   fclose(self_maps_f);
-  cerr << self_maps << "\n";
+  DEBUG(self_maps);
 }
 
 void test_malloc(){
@@ -184,20 +184,25 @@ void test_malloc(){
 }
 
 static int wrapped_main(int argc, char** argv, char** env) {
-        //test_malloc();
-        DEBUG("Alpaca started, waiting for user input to continue");
-        char *getline_buf = NULL;
-        size_t getline_size;
-        getline(&getline_buf, &getline_size, stdin);
+  //test_malloc();
+  DEBUG("Alpaca started, waiting for user input to continue");
+  char *getline_buf = NULL;
+  size_t getline_size;
+  getline(&getline_buf, &getline_size, stdin);
   DEBUG("Entered Alpaca's main");
   setup_segv_handler();
   wrong_writes = 0;
   
   //storing the func_name searched for as the last argument
-  char alpaca_mode[256], func_name[256];
+  char alpaca_mode[256], func_name[256], energy_ppid[256];
 
+  if(getenv("ALPACA_MODE") == NULL || getenv("ALPACA_FUNC") == NULL || getenv("ALPACA_PPID") == NULL) {
+    cerr << "Environment variables not set correctly!\n";
+    exit(2);
+  }
   strcpy(alpaca_mode, getenv("ALPACA_MODE"));
   strcpy(func_name, getenv("ALPACA_FUNC"));
+  strcpy(energy_ppid, getenv("ALPACA_PPID"));
   DEBUG("The mode is " << alpaca_mode);
   DEBUG("The target function is " << func_name);
 
@@ -235,16 +240,27 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
   DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
 
-  
+  /*
   DEBUG("Gathering starting readings");
   energy_reading_t start_readings[NUM_ENERGY_READINGS];
   int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
   cerr << "Starting target program\n";
-  
+  */
   //test_malloc();
+  int ppid = atoi(energy_ppid);
+  
+  if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR1);
   int main_return = og_main(argc, argv, env);
-  //test_malloc();
+  if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR1);
   
+  fflush(stdout);
+  fflush(stderr);
+  fflush(return_file);
+  fflush(write_file);
+  fflush(sys_file);
+  fflush(ret_addr_file);
+  //test_malloc();
+  /*
   DEBUG("Gathering end readings");
   energy_reading_t end_readings[NUM_ENERGY_READINGS];
   int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
@@ -253,7 +269,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   for(int i = 0; i < end_readings_num; i++) {
     cerr << end_readings[i].zone << ": " << dec << end_readings[i].energy - start_readings[i].energy << "\n";
   }
-  
+  */
   
   //test_malloc();
   check_self_maps();
@@ -268,6 +284,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   //fclose(ret_addr_file);
   
   //test_malloc();
+  if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR2);
   return main_return;
 }
 
@@ -444,36 +461,36 @@ char* int_to_hex(uint64_t i) {
 }
 
 void debug_registers(ucontext_t* context) {
-        DEBUG("Debugging registers");
-        int regs[] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI,
-                           REG_RDI, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
-        const char* reg_n[] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8",
+  DEBUG("Debugging registers");
+  int regs[] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI,
+                REG_RDI, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
+  const char* reg_n[] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8",
                          "r9", "r10", "r11", "r12", "r13", "r14", "r15"};
-        for(int i = 0; i < 16; i++) {
-                char buf[256];
-                snprintf(buf, 256, "Value of %s: %s\n", reg_n[i], int_to_hex((uint64_t)context->uc_mcontext.gregs[regs[i]]));
-                fputs(buf, stderr);
-        }
-;
-        const char* fpreg_n[] = {"xmm0", "xmm1"};
-        for (int i = 0; i < 2; i++) {
-                for (int j = 0; j < 16; j++) {
-                        char buf[256];
-                        snprintf(buf, 256, "Value of %s at byte %d: %hhu\n", fpreg_n[i], j, ((uint8_t*)context->uc_mcontext.fpregs->_xmm[i].element)[j]);
-                        fputs(buf, stderr);
-                }
-        }
+  for(int i = 0; i < 16; i++) {
+    char buf[256];
+    snprintf(buf, 256, "Value of %s: %s\n", reg_n[i], int_to_hex((uint64_t)context->uc_mcontext.gregs[regs[i]]));
+    //fputs(buf, stderr);
+  }
+  ;
+  const char* fpreg_n[] = {"xmm0", "xmm1"};
+  for (int i = 0; i < 2; i++) {
+    for (int j = 0; j < 16; j++) {
+      char buf[256];
+      snprintf(buf, 256, "Value of %s at byte %d: %hhu\n", fpreg_n[i], j, ((uint8_t*)context->uc_mcontext.fpregs->_xmm[i].element)[j]);
+      //fputs(buf, stderr);
+    }
+  }
 }
 
 void writef(char* data, size_t size, FILE* file) {
-        char fname[256];
-        uint64_t rf = (uint64_t) return_file, wf = (uint64_t) write_file, sf = (uint64_t) sys_file, raf = (uint64_t) ret_addr_file, f = (uint64_t) file;
-        if(f == rf) strcpy(fname, "return_file");
-        else if(f == wf) strcpy(fname, "write_file");
-        else if(f == sf) strcpy(fname, "sys_file");
-        else if(f == raf) strcpy(fname, "ret_addr_file");
-        for(int i = 0; i < size; i++) DEBUG("Data: " << int_to_hex((uint64_t)data[i]));
-        DEBUG("Data to " << fname << " as uint64_t: " << int_to_hex(*(uint64_t*)data));
+  char fname[256];
+  uint64_t rf = (uint64_t) return_file, wf = (uint64_t) write_file, sf = (uint64_t) sys_file, raf = (uint64_t) ret_addr_file, f = (uint64_t) file;
+  if(f == rf) strcpy(fname, "return_file");
+  else if(f == wf) strcpy(fname, "write_file");
+  else if(f == sf) strcpy(fname, "sys_file");
+  else if(f == raf) strcpy(fname, "ret_addr_file");
+  for(int i = 0; i < size; i++) DEBUG("Data: " << int_to_hex((uint64_t)data[i]));
+  DEBUG("Data to " << fname << " as uint64_t: " << int_to_hex(*(uint64_t*)data));
   for(int i = 0; i < size; i++) DEBUG("fputc wrote " << fputc(data[i], file) << " (data[" << i << "])");
 }
 

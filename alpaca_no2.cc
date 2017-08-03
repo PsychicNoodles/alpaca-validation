@@ -96,8 +96,11 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
   uint8_t scale = 0;
   size_t base = get_register(op->base, context);
   if (op->index != UD_NONE) {
-     if (op->scale == 0) scale = 1;
-     else scale = op->scale;
+    if (op->scale == 0) {
+      scale = 1;
+      DEBUG("Scale hardcoded to 1");
+    }
+    else scale = op->scale;
   }
   size_t index = get_register(op->index, context);
 
@@ -108,10 +111,13 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
 }
 
 void handle_push(ud_t* obj, ucontext_t* context) {
+  /*
   const ud_operand_t* op = ud_insn_opr(obj, 0);      
   uint64_t reg_val = get_register(op->base, context);
   DEBUG("Handling a push, register value: " << int_to_hex(reg_val));
   mem_writing = context->uc_mcontext.gregs[REG_RSP]-8;
+  DEBUG("Set mem_writing to " << int_to_hex(mem_writing) << ", rsp is " << int_to_hex(context->uc_mcontext.gregs[REG_RSP]));
+  */
 }
 
 /**
@@ -194,7 +200,7 @@ void log_returns(ucontext_t* context) {
   for(int i = 0; i < (write_syscall_count / 8) + 1; i++) {
     flag_byte.reset(); 
     for(int j = 0; j < 8 && j + i * 8 < write_syscall_count; j++) {
-            DEBUG("Write/syscall bool array value: " << write_syscall_flag[i*8 + j] << " at index " << (i*8 + j) << " (i is " << i << ")");
+      DEBUG("Write/syscall bool array value: " << write_syscall_flag[i*8 + j] << " at index " << (i*8 + j) << " (i is " << i << ")");
       if(write_syscall_flag[i * 8 + j]) {
         flag_byte.set(j, true);
       }
@@ -237,8 +243,8 @@ void log_returns(ucontext_t* context) {
 
 //ret addr logging
 void log_ret_addrs(uint64_t addr) {
-    DEBUG("Logging return address: " << int_to_hex(addr));
-    writef((char*)&addr, sizeof(uint64_t), ret_addr_file);
+  DEBUG("Logging return address: " << int_to_hex(addr));
+  writef((char*)&addr, sizeof(uint64_t), ret_addr_file);
 }
 
 /**
@@ -376,7 +382,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
       DEBUG("Finished resetting static variables");
 
-     return;
+      return;
     }
   }
 
@@ -395,12 +401,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   if(context->uc_mcontext.gregs[REG_RIP] == 0x7fff7bd1de00) check_self_maps();
 
   /*
-  void* buf[200];
-  int bt = backtrace(buf, 200);
-  DEBUG("Getting the backtrace (" << bt << ")");
-  backtrace_symbols_fd(buf, bt, 2);
+    void* buf[200];
+    int bt = backtrace(buf, 200);
+    DEBUG("Getting the backtrace (" << bt << ")");
+    backtrace_symbols_fd(buf, bt, 2);
   */
 
+  uint8_t instr[18];
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
     DEBUG("Special case: ret (call count is " << call_count << ")");
@@ -447,7 +454,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     //known potential writes with 2 operands
   case UD_Imov:
     DEBUG("Known potential write 2 op instruction, testing op 0");
-    test_operand(&ud_obj, 0, 2, context);
+    memcpy(instr, ud_insn_ptr(&ud_obj), 18);
+    if(instr[0] == 0x88 && instr[1] == 0x0f) {
+      DEBUG("Special case: 88 0f");
+      mem_writing = context->uc_mcontext.gregs[REG_RDI];
+    } else {
+      test_operand(&ud_obj, 0, 2, context);
+    }
     break;
     //readonly 3 operand instructions
   case UD_Ipshufd:  case UD_Ipshufhw: case UD_Ipshuflw: case UD_Ipshufw: case UD_Ishufps:
@@ -469,20 +482,40 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     exit(2);
   case UD_Iinvalid:
     DEBUG("Invalid instruction: udis cannot recognize it");
-    uint8_t instr[18];
     memcpy(instr, ud_insn_ptr(&ud_obj), 18);
-    if(instr[0] == 0xc5 && (instr[1] == 0xfd || instr[1] == 0xf9 || instr[1] == 0xfa || instr[1] == 0xfe) && (instr[2] == 0x6f || instr[2] == 0x7f)) {
-      DEBUG("Special case: vmovdqa");
-      DEBUG("Changing opcode bytes to act as instruction");
+    if((instr[0] == 0xc5 || instr[0]== 0xc4) && (instr[1] == 0xfd || instr[1] == 0xf9 || instr[1] == 0xfa || instr[1] == 0xfe)) {
+      if ((instr[0] == 0xc4)  && (instr[2] == 0x6f || instr[2] == 0x7f)) {
+        DEBUG("Special case: 3 byte prefix vmovdqa");
+        DEBUG("Changing opcode bytes to act as instruction");
+
+        if (instr[2] & 0b100) {
+          DEBUG("YMM registers used");
+          large_large_write = true;
+        } else {
+          DEBUG("XMM registers used");
+          large_write = true;
+        }
+
+        //shift one byte b/c mov has a 2 byte prefix
+        for (int i = 1; i < 9; i++) {
+          instr[i-1] = instr[i];
+        }
+      } else {
+        DEBUG("Special case: 2 byte prefix vmovdqa");
+        DEBUG("Changing opcode bytes to act as instruction");
+
+        if (instr[1] & 0b100) {
+          DEBUG("YMM registers used");
+          large_large_write = true;
+        } else {
+          DEBUG("XMM registers used");
+          large_write = true;
+        }
+      }
 
       instr[0] = (instr[1] == 0xfd || instr[1] == 0xf9) ? 0x66 : 0xf3; //movdqa 0xfd vs. movdqu 0xfe
-      if (instr[1] == 0xfe) { 
-        DEBUG("YMM registers used");
-        large_large_write = true;
-      } else large_write = true;
       instr[1] = 0x0f;
       //movdqa specific with same operand ordering as vmovdqa based on 0x7f or 0x6f third byte encoding
-
       for (int i = 0; i < 8; i++) {
         DEBUG("Instruction byte from instr[ " << i << "] : " << int_to_hex((uint64_t)instr[i]));
       }
@@ -553,15 +586,15 @@ void log_write(uint64_t dest_address, bool large_write, bool large_large_write) 
   writef((char*) &val, sizeof(uint64_t), write_file);
 
   if(large_large_write) {
-          DEBUG("Logging second part of large large write");
-          log_write(dest_address + 8, false, false);
-          DEBUG("Logging third part of large large write");
-          log_write(dest_address + 16, false, false);
-          DEBUG("Logging fourth part of large large write");
-          log_write(dest_address + 24, false, false);
+    DEBUG("Logging second part of large large write");
+    log_write(dest_address + 8, false, false);
+    DEBUG("Logging third part of large large write");
+    log_write(dest_address + 16, false, false);
+    DEBUG("Logging fourth part of large large write");
+    log_write(dest_address + 24, false, false);
   } else if(large_write) {
-          DEBUG("Logging second part of large write");
-          log_write(dest_address + 8, false, false);
+    DEBUG("Logging second part of large write");
+    log_write(dest_address + 8, false, false);
   }
 
   DEBUG("Finished logging a write");
