@@ -10,3 +10,6 @@ read-logger
 *~
 \#*\#
 .\#*
+output*
+error*
+

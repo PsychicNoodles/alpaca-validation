@@ -11,5 +11,5 @@ check: all
 	clang test-suite.c -g -o test-suite
 	python run-tests.py
 
-energy:
+energy: energy.cpp
 	clang++ --std=c++11 energy.cpp -g -o energy

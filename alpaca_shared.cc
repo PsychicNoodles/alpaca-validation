@@ -183,7 +183,7 @@ void test_malloc(){
         }
 }
 
-static int wrapped_main(int argc, char** argv, char** env) {
+static int wrapped_main(int argc, char** argv, char** envp) {
   //test_malloc();
   DEBUG("Alpaca started, waiting for user input to continue");
   char *getline_buf = NULL;
@@ -192,12 +192,27 @@ static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("Entered Alpaca's main");
   setup_segv_handler();
   wrong_writes = 0;
+
+  char** env;
+  for (env = envp; *env != 0; env++)
+  {
+    char* thisEnv = *env;
+    printf("alpaca: %s\n", thisEnv);    
+  }
   
   //storing the func_name searched for as the last argument
   char alpaca_mode[256], func_name[256], energy_ppid[256];
 
-  if(getenv("ALPACA_MODE") == NULL || getenv("ALPACA_FUNC") == NULL || getenv("ALPACA_PPID") == NULL) {
-    cerr << "Environment variables not set correctly!\n";
+  if(getenv("ALPACA_MODE") == NULL) {
+    cerr << "Environment variables not set correctly (ALPACA_MODE not set)!\n";
+    exit(2);
+  }
+  if(getenv("ALPACA_FUNC") == NULL) {
+    cerr << "Environment variables not set correctly (ALPACA_FUNC not set)!\n";
+    exit(2);
+  }
+  if(getenv("ALPACA_PPID") == NULL) {
+    cerr << "Environment variables not set correctly (ALPACA_PPID not set)!\n";
     exit(2);
   }
   strcpy(alpaca_mode, getenv("ALPACA_MODE"));

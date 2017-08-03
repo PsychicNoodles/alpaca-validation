@@ -24,6 +24,11 @@ for test, res in pairs:
         print "%s test was successful" % test
     else:
         print "%s test was unsuccessful (expected %s, got %s)" % (test, res, outdata)
+
+    with open("output-%s.txt" % test, "w") as f:
+        f.write(outdata)
+    with open("error-%s.txt" % test, "w") as f:
+        f.write(errdata)
 #        print "disabler stderr:"
 #        for line in disabler.stderr:
 #            print line

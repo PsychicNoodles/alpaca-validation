@@ -113,8 +113,13 @@ int main(int argc, char** argv){
     exit(2);
   }
 
+  DEBUG("Started energy utility");
+  
   const char* prog_path = argv[1];
   func = argv[2];
+
+  DEBUG("Test program is " << prog_path);
+  DEBUG("Test function is " << func);
   
   pid_t pid;
   if((pid = fork()) == 0) { //child parent
@@ -122,36 +127,54 @@ int main(int argc, char** argv){
     
     pid_t alpaca_pid;
     if ((alpaca_pid = fork()) == 0) {
+      DEBUG("In analyzer fork, pid " << getpid());
       //run analyzer
 
       //setting up the environment
       string env_func = "ALPACA_FUNC=";
       env_func += func;
+      env_func += "_func";
       string env_ppid = "ALPACA_PPID=";
-      env_ppid += parent_pid;
+      env_ppid += to_string(parent_pid);
       char* env[4];
-      env[0] = (char*) "LD_PRELOAD=alpaca.so:libelf++.so:libudis86.so";
-      env[1] = (char*) "LD_PRELOAD=alpaca.so:libelf++.so:libudis86.so";
-      env[1] = (char*) env_func.c_str();
-      env[2] = (char*) env_ppid.c_str();
+      env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
+      env[1] = (char*) "ALPACA_MODE=a";
+      env[2] = (char*) env_func.c_str();
+      env[3] = (char*) env_ppid.c_str();
 
+      for(int i = 0; i < 4; i++) {
+        DEBUG("Analyzer: env[" << i << "]: " << env[i]);
+      }
+
+      DEBUG("Analyzer executing");
       execve(prog_path, &argv[1], env);
     } else { //run disabler
-      wait(&alpaca_pid);
+      DEBUG("In disabler fork, waiting for " << alpaca_pid);
+      int status;
+      waitpid(alpaca_pid, &status, 0);
+      DEBUG("Disabler finished waiting, status was " << status);
 
       string env_func = "ALPACA_FUNC=";
       env_func += func;
+      env_func += "_func";
       string env_ppid = "ALPACA_PPID=";
-      env_ppid += parent_pid;
+      env_ppid += to_string(parent_pid);
       char* env[4];
-      env[0] = (char*) "LD_PRELOAD=alpaca.so:libelf++.so:libudis86.so";
-      env[1] = (char*) "LD_PRELOAD=alpaca.so:libelf++.so:libudis86.so";
-      env[1] = (char*) env_func.c_str();
-      env[2] = (char*) env_ppid.c_str();
+      env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
+      env[1] = (char*) "ALPACA_MODE=d";
+      env[2] = (char*) env_func.c_str();
+      env[3] = (char*) env_ppid.c_str();
+
+      for(int i = 0; i < 4; i++) {
+        DEBUG("Disabler env[" << i << "]: " << env[i]);
+      }
+
+      DEBUG("Disabler executing");
 
       execve(prog_path, &argv[1], env);
     }
   } else { //parent process
+    DEBUG("In parent process");
     struct sigaction measure_sigaction, stop_sigaction;
     
     memset(&measure_sigaction, 0, sizeof(struct sigaction));
@@ -161,8 +184,10 @@ int main(int argc, char** argv){
     memset(&stop_sigaction, 0, sizeof(struct sigaction));
     stop_sigaction.sa_handler = sig_stop_handler;
     sigemptyset(&stop_sigaction.sa_mask);
-    
+
+    DEBUG("Setting up signal handlers");
     sigaction(SIGUSR1, &measure_sigaction, NULL);
     sigaction(SIGUSR2, &stop_sigaction, NULL);
+    DEBUG("Setup finished");
   }
 }
