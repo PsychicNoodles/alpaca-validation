@@ -76,7 +76,7 @@ void measure_energy() {
 
 void sig_measure_handler(int signal) {
   if(signal != SIGUSR1) {
-    cerr << "Measurement handler caught the wrong signal: " << signal << "!\n";
+    cerr << "Measurement handler caught the wrong signal: " << sys_siglist[signal] << "!\n";
     exit(3);
   }
   DEBUG("Measuring energy");
@@ -84,8 +84,8 @@ void sig_measure_handler(int signal) {
 }
 
 void sig_stop_handler(int signal) {
-  if(signal != SIGUSR1) {
-    cerr << "Stop handler caught the wrong signal: " << signal << "!\n";
+  if(signal != SIGUSR2) {
+    cerr << "Stop handler caught the wrong signal: " << sys_siglist[signal] << "!\n";
     exit(3);
   }
 
@@ -104,6 +104,8 @@ void sig_stop_handler(int signal) {
       cout << "Zone " << zone << ": " << energy << "\n";
     }
   }
+
+  exit(0);
 }
 
 int main(int argc, char** argv){
@@ -118,61 +120,83 @@ int main(int argc, char** argv){
   const char* prog_path = argv[1];
   func = argv[2];
 
+  char* sub_argv[argc];
+  for(int i = 1; i < argc; i++) {
+    sub_argv[i - 1] = (char*) malloc(strlen(argv[i]) + 1);
+    strcpy(sub_argv[i - 1], argv[i]);
+  }
+  sub_argv[argc - 1] = NULL;
+
   DEBUG("Test program is " << prog_path);
   DEBUG("Test function is " << func);
   
+  //setting up the environment
+  string env_func = "ALPACA_FUNC=";
+  env_func += func;
+  env_func += "_func";
+  char* env[5];
+  env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
+  env[2] = (char*) env_func.c_str();
+  env[4] = NULL;
+
   pid_t pid;
   if((pid = fork()) == 0) { //child parent
     pid_t parent_pid = getppid();
-    
+
+    string env_ppid = "ALPACA_PPID=";
+    env_ppid += to_string(parent_pid);
+    env[3] = (char*) env_ppid.c_str();
+      
     pid_t alpaca_pid;
     if ((alpaca_pid = fork()) == 0) {
       DEBUG("In analyzer fork, pid " << getpid());
       //run analyzer
 
-      //setting up the environment
-      string env_func = "ALPACA_FUNC=";
-      env_func += func;
-      env_func += "_func";
-      string env_ppid = "ALPACA_PPID=";
-      env_ppid += to_string(parent_pid);
-      char* env[4];
-      env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
+      //setting up the environment mode
       env[1] = (char*) "ALPACA_MODE=a";
-      env[2] = (char*) env_func.c_str();
-      env[3] = (char*) env_ppid.c_str();
 
-      for(int i = 0; i < 4; i++) {
-        DEBUG("Analyzer: env[" << i << "]: " << env[i]);
+      for(int i = 0; i < 5; i++) {
+        DEBUG("Analyzer env[" << i << "]: " << env[i]);
+      }
+
+      for(int i = 0; i < argc; i++) {
+        DEBUG("Analyzer argv[" << i << "]: " << (sub_argv[i] == NULL ? "NULL" : sub_argv[i]));
       }
 
       DEBUG("Analyzer executing");
-      execve(prog_path, &argv[1], env);
+      if (execvpe(prog_path, sub_argv, env) == -1) {
+        DEBUG("Analyzer exec failed" << strerror(errno));
+      }
+      
+    } else if (alpaca_pid == -1) {
+      DEBUG("Forking failed");
+      exit(3);
     } else { //run disabler
       DEBUG("In disabler fork, waiting for " << alpaca_pid);
+      
       int status;
       waitpid(alpaca_pid, &status, 0);
       DEBUG("Disabler finished waiting, status was " << status);
 
-      string env_func = "ALPACA_FUNC=";
-      env_func += func;
-      env_func += "_func";
-      string env_ppid = "ALPACA_PPID=";
-      env_ppid += to_string(parent_pid);
-      char* env[4];
-      env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
       env[1] = (char*) "ALPACA_MODE=d";
-      env[2] = (char*) env_func.c_str();
-      env[3] = (char*) env_ppid.c_str();
-
+     
       for(int i = 0; i < 4; i++) {
         DEBUG("Disabler env[" << i << "]: " << env[i]);
       }
 
+      for(int i = 0; i < argc; i++) {
+        DEBUG("Disabler argv[" << i << "]: " << (sub_argv[i] == NULL ? "NULL" : sub_argv[i]));
+      }
+
       DEBUG("Disabler executing");
 
-      execve(prog_path, &argv[1], env);
+      if (execvpe(prog_path, sub_argv, env) == -1) {
+        DEBUG("Disabler exec failed" << strerror(errno));
+      }
     }
+  } else if (pid == -1) {
+    DEBUG("Forking failed");
+    exit(3);
   } else { //parent process
     DEBUG("In parent process");
     struct sigaction measure_sigaction, stop_sigaction;
@@ -189,5 +213,7 @@ int main(int argc, char** argv){
     sigaction(SIGUSR1, &measure_sigaction, NULL);
     sigaction(SIGUSR2, &stop_sigaction, NULL);
     DEBUG("Setup finished");
+
+    while(1){}
   }
 }
