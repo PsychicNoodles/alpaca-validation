@@ -26,14 +26,6 @@
 #include <cstdlib>
 #include <cstdio>
 
-#define MAX_POWERZONES 128
-#define MAX_ENERGY_READING 128
-#define NUM_ENERGY_READINGS 128
-#define ENERGY_ROOT "/sys/class/powercap/intel-rapl/"
-#define ENERGY_NAME "name"
-#define ENERGY_FILE "energy_uj"
-#define ENERGY_LINE_CAPACITY 1024
-
 #define MAX_RETURNS 100000
 #define MAX_WRITES 100000000
 #define MAX_SYSCALLS 10000000
@@ -355,6 +347,7 @@ extern uint64_t func_address; //the address of the target function
 extern FILE* return_file;
 extern FILE* write_file;
 extern FILE* sys_file;
+extern FILE* local_sys_file;
 extern FILE* ret_addr_file;
 
 extern uint8_t start_byte; // used in analyzer
@@ -367,8 +360,6 @@ extern uint64_t wrong_writes;
  * func_name: the name of the target function
  */
 uint64_t find_address(const char* file_path, string func_name);
-
-int measure_energy(energy_reading_t* readings, int max);
 
 char* int_to_hex(uint64_t i);
 

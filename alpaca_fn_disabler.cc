@@ -15,6 +15,7 @@
 
 #define PAGE_SIZE 4096
 #define NO_OVERLAPS {false, false, false, false, false, false, false, false}
+#define LOCAL_SYSCALL_BUF_SIZE 1024
 
 using namespace std;
 
@@ -24,7 +25,13 @@ typedef struct {
   uint64_t rdx;
   float xmm0[4];
   float xmm1[4]; 
-} ret_t; 
+} ret_t;
+
+typedef struct {
+  uint64_t syscall_ind;
+  uint64_t buf_size;
+  uint8_t buffer[LOCAL_SYSCALL_BUF_SIZE];
+} local_sys_t;
 
 // queues
 
@@ -52,6 +59,11 @@ size_t flags_filled = 0;
 uint64_t syses[MAX_SYSCALLS];
 size_t syses_index = 0;
 size_t syses_filled = 0;
+
+/// local syscall buffers
+local_sys_t local_syses[MAX_SYSCALLS];
+size_t local_syses_index = 0;
+size_t local_syses_filled = 0;
 
 /// memory write destination addresses and values
 uint64_t writes[MAX_WRITES];
@@ -149,6 +161,9 @@ bool mimic_syscall() {
     cerr << "Overflowing the syscalls array!\n";
     exit(2);
   }
+
+  bool local_syscall = local_syses[local_syses_index].syscall_ind == syses_index;
+  
   uint64_t sys_num = syses[syses_index++];
 
   syscall_t syscall_struct = syscalls[sys_num];
@@ -166,6 +181,12 @@ bool mimic_syscall() {
   for (int i = 0; i < args_no; i++) {
     DEBUG("Parameter " << i << " is " << syses[syses_index]);
     param_regs[i] = syses[syses_index++];
+  }
+
+  if(local_syscall) {
+    if(sys_num == 1) {
+      param_regs[1] = (uint64_t) local_syses[local_syses_index].buffer;
+    }
   }
 
   DEBUG("Setting up and making syscall");
@@ -242,6 +263,33 @@ void read_syscalls(){
   }
 
   DEBUG("Finished reading in syscalls");
+}
+
+void read_local_syscalls() {
+  DEBUG("Reading in local syscall buffers");
+  uint64_t buffer;
+  while(fread((char*) &buffer, sizeof(uint64_t), 1, local_sys_file)) {
+    if (local_syses_filled >= MAX_SYSCALLS) {
+      cerr << "Overflowing the local syscall buffers array!\n";
+      exit(2);
+    }
+    
+    DEBUG("Read the syscall index " << buffer);
+    local_syses[local_syses_filled].syscall_ind = buffer;
+
+    DEBUG("Reading the buffer size");
+    fread((char*) &buffer, sizeof(uint64_t), 1, local_sys_file);
+    DEBUG("Read the buffer size: " << buffer);
+    local_syses[local_syses_filled].buf_size = buffer;
+
+    DEBUG("Reading in " << buffer << " bytes into the buffer");
+    fread(local_syses[local_syses_filled].buffer, 1, buffer, local_sys_file);
+    DEBUG("Read in buffer");
+
+    local_syses_filled++;
+  }
+
+  DEBUG("Finished reading in local syscall buffers");
 }
 
 

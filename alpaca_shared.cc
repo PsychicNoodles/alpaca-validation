@@ -13,6 +13,7 @@ uint64_t func_address; //the address of the target function
 FILE* return_file;
 FILE* write_file;
 FILE* sys_file;
+FILE* local_sys_file;
 FILE* ret_addr_file;
 
 //the byte overwrtitten with 0xCC for single-stepping, used in analyzer
@@ -115,6 +116,7 @@ void setup_analyzer() {
 
 void setup_disabler() {
   read_syscalls();
+  read_local_syscalls();
   read_writes();
   read_returns();
   setup_disabler_jump();
@@ -157,6 +159,12 @@ void open_logs(const char* mode) {
     exit(4);
   }
   setbuf(sys_file, NULL);
+  local_sys_file = fopen("local-sys-logger", mode);
+  if(local_sys_file == NULL) {
+    cerr << "Error opening local-sys log: " << strerror(errno);
+    exit(4);
+  }
+  setbuf(local_sys_file, NULL);
   ret_addr_file = fopen("ret-addr-logger", mode);
   if(ret_addr_file == NULL) {
     cerr << "Error opening ret-addr log: " << strerror(errno);
@@ -185,10 +193,10 @@ void test_malloc(){
 
 static int wrapped_main(int argc, char** argv, char** env) {
   //test_malloc();
-  /*DEBUG("Alpaca started, waiting for user input to continue");
+  DEBUG("Alpaca started, waiting for user input to continue");
   char *getline_buf = NULL;
   size_t getline_size;
-  getline(&getline_buf, &getline_size, stdin);*/
+  getline(&getline_buf, &getline_size, stdin);
   DEBUG("Entered Alpaca's main");
   setup_segv_handler();
   wrong_writes = 0;
@@ -248,38 +256,28 @@ static int wrapped_main(int argc, char** argv, char** env) {
 
   DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
 
-  /*
-  DEBUG("Gathering starting readings");
-  energy_reading_t start_readings[NUM_ENERGY_READINGS];
-  int start_readings_num = measure_energy(start_readings, NUM_ENERGY_READINGS);
-  cerr << "Starting target program\n";
-  */
-  //test_malloc();
-  int ppid = atoi(energy_ppid);
+  setbuf(stdout, NULL);
   
+  int ppid = atoi(energy_ppid);
+
   if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR1);
   int main_return = og_main(argc, argv, env);
   if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR1);
+
+  /*DEBUG("Checking printf buffer");
+  uint8_t* printf_buffer = (uint8_t*)140737488338320;
+  for(int i = 0; i < 256; i++) {
+    DEBUG("printf[" << i << "]: " << (int) printf_buffer[i]);
+    }*/
   
   fflush(stdout);
   fflush(stderr);
   fflush(return_file);
   fflush(write_file);
   fflush(sys_file);
+  fflush(local_sys_file);
   fflush(ret_addr_file);
-  //test_malloc();
-  /*
-  DEBUG("Gathering end readings");
-  energy_reading_t end_readings[NUM_ENERGY_READINGS];
-  int end_readings_num = measure_energy(end_readings, NUM_ENERGY_READINGS);
 
-  cerr << "Energy consumption (" << dec << end_readings_num << ")\n";
-  for(int i = 0; i < end_readings_num; i++) {
-    cerr << end_readings[i].zone << ": " << dec << end_readings[i].energy - start_readings[i].energy << "\n";
-  }
-  */
-  
-  //test_malloc();
   check_self_maps();
   cerr << "Wrong writes: " << wrong_writes << "\n";
 
@@ -289,6 +287,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   //fclose(return_file);
   //fclose(write_file);
   //fclose(sys_file);
+  //fclose(local_sys_file);
   //fclose(ret_addr_file);
   
   //test_malloc();
@@ -361,96 +360,6 @@ uint64_t find_address(const char* file_path, string func_name) {
   //potential problem with multiple entries in the table for the same function? 
 }
 
-/**
- *Reads up to max bytes from path into contents
- *@return number of bytes read
- */
-
-int file_readline(char path[], char contents[], int max) {
-  memset(contents, 0, max);
-  FILE* in = fopen(path, "r");
-  int count = fread(contents, max, 1, in);
-  *strstr(contents, "\n") = '\0';
-  return count;
-}
-
-/**
- *finds up to max files and directories in dir with substring substr into results
- *@return the number of results
- */
-
-int find_in_dir(const char dir[], const char substr[], char results[][256], int max) {
-  int ind = 0;
-  cerr << "Directory being searched: " << dir << "\n"; 
-  DIR* dirp = opendir(dir); //???????????????????????????
-  struct dirent* dp;
-  while((dp = readdir(dirp)) != NULL && ind < max) {
-    strcpy(results[ind], dp->d_name);
-    if(strstr(results[ind], substr) != NULL) {
-      ind++;
-    }
-  }
-  closedir(dirp);
-  return ind;
-}
-
-/**
- *reads from the energy zone name and usage files
- *@return a struct with the name and the energy usage
- */
-
-energy_reading_t get_energy_info(char dir[]) {
-  // build name file path
-  char name[MAX_ENERGY_READING]; 
-  size_t ename_len = strlen(dir) + strlen(ENERGY_NAME) + 1;
-  char ename[ename_len];
-  snprintf(ename, ename_len, "%s%s", dir, ENERGY_NAME);
-  file_readline(ename, name, MAX_ENERGY_READING);
-  
-  // build energy usage file path      
-  char energy_str[MAX_ENERGY_READING];
-  size_t efile_len = strlen(dir) + strlen(ENERGY_FILE) + 1;
-  char efile[efile_len];
-  snprintf(efile, efile_len, "%s%s", dir, ENERGY_FILE);
-  file_readline(efile, energy_str, MAX_ENERGY_READING);
-  uint64_t energy = strtoul(energy_str, NULL, 10);
-        
-  energy_reading_t reading = { name, energy };
-  return reading; 
-}
-
-/**
- *measures the energy of up to max zones/subzones into readings
- *@return the number of zones/subzones measured 
- */
-
-int measure_energy(energy_reading_t* readings, int max) {
-  int ind = 0;
-  char powerzones[MAX_POWERZONES][256];
-  int num_zones = find_in_dir(ENERGY_ROOT, "intel-rapl:", powerzones, MAX_POWERZONES);
-  
-  for(int i = 0; i < num_zones && ind < max; i++) {
-    char* zone = powerzones[i];
-
-    // build the zone directory path
-    size_t zonedir_len = strlen(ENERGY_ROOT) + strlen(zone) + 2;
-    char zonedir[zonedir_len];
-    snprintf(zonedir, zonedir_len, "%s%s/", ENERGY_ROOT, zone);
-    readings[ind++] = get_energy_info(zonedir);
-    
-    char subzones[MAX_POWERZONES][256];
-    int num_subzones = find_in_dir(zonedir, zone, subzones, MAX_POWERZONES);
-    
-    for(int j = 0; j < num_subzones && ind < max; j++) {
-      // build the subzone directory path
-      size_t subzonedir_len = strlen(zonedir) + strlen(subzones[j]) + 2;
-      char subzonedir[subzonedir_len];
-      snprintf(subzonedir, subzonedir_len, "%s%s/", zonedir, subzones[j]);
-      readings[ind++] = get_energy_info(subzonedir);
-    }
-  }
-  return ind;
-}
 
 void initialize_ud(ud_t* ud_obj) {
   DEBUG("Initializing the udis86 object");
@@ -492,11 +401,13 @@ void debug_registers(ucontext_t* context) {
 
 void writef(char* data, size_t size, FILE* file) {
   char fname[256];
-  uint64_t rf = (uint64_t) return_file, wf = (uint64_t) write_file, sf = (uint64_t) sys_file, raf = (uint64_t) ret_addr_file, f = (uint64_t) file;
+  uint64_t rf = (uint64_t) return_file, wf = (uint64_t) write_file, sf = (uint64_t) sys_file, lsf = (uint64_t) local_sys_file, raf = (uint64_t) ret_addr_file, f = (uint64_t) file;
   if(f == rf) strcpy(fname, "return_file");
   else if(f == wf) strcpy(fname, "write_file");
   else if(f == sf) strcpy(fname, "sys_file");
   else if(f == raf) strcpy(fname, "ret_addr_file");
+  else if(f == lsf) strcpy(fname, "local_sys_file");
+  else strcpy(fname, "invalid");
   for(int i = 0; i < size; i++) DEBUG("Data: " << int_to_hex((uint64_t)data[i]));
   DEBUG("Data to " << fname << " as uint64_t: " << int_to_hex(*(uint64_t*)data));
   for(int i = 0; i < size; i++) DEBUG("fputc wrote " << fputc(data[i], file) << " (data[" << i << "])");

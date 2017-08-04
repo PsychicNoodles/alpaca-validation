@@ -198,34 +198,49 @@ pointer_t pointer_func() {
   return ret;
 }
 
-#define NUM_MALLOCS 100
-void malloc_free_func() {
-  char* a[NUM_MALLOCS];
-    printf("malloced array of size %d\n", NUM_MALLOCS);
-  for (int i = 0; i < NUM_MALLOCS; i++) {
-    a[i] = (char*)malloc(sizeof(char)*(i*3));
-      printf("malloced item at %d of size %d\n", i, i*3);
-  }
-  printf("finished mallocing\n");
-
-  
-  for(int i = 0; i < NUM_MALLOCS; i++)
-   printf("malloced: %p\n", a[i]);
-
-  for (int i = 0; i < NUM_MALLOCS; i++) {
-   free(a[i]);
-    printf("freed item at %d\n", i);
-  }
-  printf("returning\n");
-  
-}
-
 triple_double_t triple_double_func() {
   triple_double_t ret;
   ret.a = 32.0;
   ret.b = 33.0;
   ret.c = 34.0;
   return ret;
+}
+
+#define NUM_MALLOCS 10
+void malloc_free_func() {
+  /**
+  char* a[NUM_MALLOCS];
+  printf("malloced array of size %d\n", NUM_MALLOCS);
+ 
+  for (int i = 0; i < NUM_MALLOCS; i++) {
+    a[i] = (char*)malloc(sizeof(char)*(i*3));
+    printf("malloced item at %d of size %d", i, i*3);
+  }
+  **/
+  char* a[NUM_MALLOCS];
+  //printf("malloced array of size %d\n", NUM_MALLOCS);
+  //for(int i = 0; i < NUM_MALLOCS; i++) {
+    //printf("will malloc %d\n", i);
+    //a[i] = (char*)malloc(sizeof(char)*(i*3));
+    //printf("malloced %d\n", i);
+    //}
+  for(int i = 0; i < NUM_MALLOCS; i++) {
+    printf("printf %d ", i);
+  }
+
+  
+  //printf("finished mallocing\n");
+
+  
+  //for(int i = 0; i < NUM_MALLOCS; i++)
+  // printf("malloced: %p\n", a[i]);
+
+  //for (int i = 0; i < NUM_MALLOCS; i++) {
+  //free(a[i]);
+  // printf("freed item at %d\n", i);
+  //}
+  //printf("returning\n");
+  
 }
 
 void mem_cpy_func(char arr1[], char arr2[], int size) {
@@ -277,6 +292,13 @@ int* mmap_func() {
 
 #define MAX_PRINTFS 100
 void printf_func() {
+  for(int i = 0; i < MAX_PRINTFS; i++) printf("printf %d ", i);
+  printf("\n");
+}
+
+
+#define MAX_PRINTFS 100
+void printf2_func() {
   for(int i = 0; i < MAX_PRINTFS; i++) printf("printf %d ", i);
   printf("\n");
 }
@@ -370,5 +392,9 @@ int main(int argc, char** argv) {
   }
   if(cmp(argv[1], "printf")) {
           printf_func();
+  }
+
+    if(cmp(argv[1], "printf2")) {
+          printf2_func();
   }
 }

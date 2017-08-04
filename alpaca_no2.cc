@@ -601,13 +601,15 @@ void log_write(uint64_t dest_address, bool large_write, bool large_large_write) 
 }
 
 void log_syscall(uint64_t sys_num, ucontext_t* context) {
+
   DEBUG("Logging a syscall (" << sys_num << "), write/syscall count is now " << write_syscall_count + 1);
   if(write_syscall_count >= MAX_WRITE_SYSCALL_COUNT) {
     cerr << "Overflowing write/syscall flag array!\n";
     exit(2);
   }
-  write_syscall_flag[write_syscall_count++] = false;
 
+  write_syscall_flag[write_syscall_count++] = false;
+  
   DEBUG("Logging the syscall address");
   writef((char*) &context->uc_mcontext.gregs[REG_RIP], sizeof(uint64_t), ret_addr_file);
   
@@ -626,6 +628,26 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
     DEBUG("Logging syscall parameter " << i << ": " << reg_val);
     writef((char*) &reg_val, sizeof(uint64_t), sys_file);
   }
+  
+  uint64_t stack_ptr = context->uc_mcontext.gregs[REG_RSP] - 128;
+  uint64_t buff_addr = context->uc_mcontext.gregs[REG_RSI];
+  if (sys_num == 1 && ((uintptr_t) stack_base > buff_addr && stack_ptr < buff_addr)) {
+    DEBUG("Syscall using a local stack buffer!");
+    DEBUG("Syscall number: " << sys_num);
+
+    uint64_t buff_size = context->uc_mcontext.gregs[REG_RDX];
+    uint64_t syscall_count = write_syscall_count - 1;
+    DEBUG("Buffer address is " << int_to_hex(buff_addr) << "; buffer size is " << buff_size);
+
+    DEBUG("Logging the write/syscall count number");
+    writef((char*) &syscall_count, sizeof(uint64_t), local_sys_file);
+    
+    DEBUG("Logging the buffer size");
+    writef((char*) &buff_size, sizeof(uint64_t), local_sys_file);
+    
+    DEBUG("Logging the buffer contents");
+    writef((char*) buff_addr, buff_size, local_sys_file);
+  } 
 
   DEBUG("Finished logging syscall");
 }
@@ -655,7 +677,6 @@ bool just_read(uint64_t mem_address, bool is_mem_opr, ucontext_t* context) {
     DEBUG("The stack frame is " << int_to_hex((uint64_t) stack_base) << " to " << int_to_hex(stack_ptr));
 
     DEBUG("Finished determining if instruction is readonly: " << ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address));
-    //return false;
     return ((uintptr_t) stack_base > mem_address && stack_ptr < mem_address); 
   }
 
