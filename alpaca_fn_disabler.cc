@@ -16,6 +16,7 @@
 #define PAGE_SIZE 4096
 #define NO_OVERLAPS {false, false, false, false, false, false, false, false}
 #define LOCAL_SYSCALL_BUF_SIZE 1024
+#define NUM_SYSCALL_PARAMS 6
 
 using namespace std;
 
@@ -26,6 +27,12 @@ typedef struct {
   float xmm0[4];
   float xmm1[4]; 
 } ret_t;
+
+typedef struct {
+  int syscall_num;
+  uint64_t params[NUM_SYSCALL_PARAMS];
+  uint64_t ret_val;
+} sys_t;
 
 typedef struct {
   uint64_t syscall_ind;
@@ -56,7 +63,7 @@ size_t flags_index = 0;
 size_t flags_filled = 0;
 
 /// syscall numbers, parameters, and return values
-uint64_t syses[MAX_SYSCALLS];
+sys_t syses[MAX_SYSCALLS];
 size_t syses_index = 0;
 size_t syses_filled = 0;
 
@@ -155,60 +162,66 @@ void disabled_fn() {
 
 //returns true upon correctly mimicing a syscall
 bool mimic_syscall() {
-  DEBUG("Mimicing a syscall");
+  DEBUG("Mimicing a syscall (" << syses_index << "th syscall)");
 
   if (syses_index >= syses_filled) {
     cerr << "Overflowing the syscalls array!\n";
     exit(2);
   }
 
-  bool local_syscall = local_syses[local_syses_index].syscall_ind == syses_index;
-  
-  uint64_t sys_num = syses[syses_index++];
+  bool local_syscall;
+  if(local_syses_index <= local_syses_filled) {
+    DEBUG("Checking next local syscall (" << local_syses[local_syses_index].syscall_ind << "th syscall/write)");
+    local_syscall = local_syses[local_syses_index].syscall_ind == syses_index;
+  } else {
+    DEBUG("No more local syscalls");
+    local_syscall = false;
+  }
 
-  syscall_t syscall_struct = syscalls[sys_num];
+  sys_t sys = syses[syses_index++];
+
+  syscall_t syscall_struct = syscalls[sys.syscall_num];
   int args_no = syscall_struct.args;
 
-  DEBUG("Syscall " << syscall_struct.name << " (" << sys_num << "), " << args_no << " parameters");
+  DEBUG("Syscall " << syscall_struct.name << " (" << sys.syscall_num << "), " << args_no << " parameters");
 
-  if (syses_index + args_no + 1 > syses_filled) { //+1 for the return
+  if (syses_index > syses_filled) { //+1 for the return
     cerr << "Overflowing the syscalls array!\n";
     exit(2);
   }
 
   DEBUG("Getting " << args_no << " parameters");
-  uint64_t param_regs[6];
   for (int i = 0; i < args_no; i++) {
-    DEBUG("Parameter " << i << " is " << syses[syses_index]);
-    param_regs[i] = syses[syses_index++];
+    DEBUG("Parameter " << i << " is " << sys.params[i]);
   }
 
   if(local_syscall) {
-    if(sys_num == 1) {
-      param_regs[1] = (uint64_t) local_syses[local_syses_index].buffer;
+    DEBUG("Mimicing local syscall"); 
+    if(sys.syscall_num == 1) {
+      DEBUG("Local write syscall");
+      sys.params[1] = (uint64_t) local_syses[local_syses_index].buffer;
     }
+    local_syses_index++;
   }
 
   DEBUG("Setting up and making syscall");
   
-  if (args_no > 0) asm("mov %0, %%rdi" : : "r"(param_regs[0]) : );
-  if (args_no > 3) asm("mov %0, %%r10" : : "r"(param_regs[3]) : );
-  if (args_no > 4) asm("mov %0, %%r8" : : "r"(param_regs[4]) : );
-  if (args_no > 5) asm("mov %0, %%r9" : : "r"(param_regs[5]) : );
-  if (args_no > 1) asm("mov %0, %%rsi" : : "r"(param_regs[1]) : );
-  if (args_no > 2) asm("mov %0, %%rdx" : : "r"(param_regs[2]) : );
+  if (args_no > 0) asm("mov %0, %%rdi" : : "r"(sys.params[0]) : );
+  if (args_no > 3) asm("mov %0, %%r10" : : "r"(sys.params[3]) : );
+  if (args_no > 4) asm("mov %0, %%r8" : : "r"(sys.params[4]) : );
+  if (args_no > 5) asm("mov %0, %%r9" : : "r"(sys.params[5]) : );
+  if (args_no > 1) asm("mov %0, %%rsi" : : "r"(sys.params[1]) : );
+  if (args_no > 2) asm("mov %0, %%rdx" : : "r"(sys.params[2]) : );
 
   //calling
-  asm("mov %0, %%rax; syscall": : "r" (sys_num):);
+  asm("mov %0, %%rax; syscall": : "r" ((uint64_t)sys.syscall_num):);
  
   uint64_t curr_ret;
   asm("mov %%rax, %0": "=r" (curr_ret): :);
 
-  uint64_t original_ret = syses[syses_index++];
-
   // using a macro causes this to not work with mmap for some reason
-  fprintf(stderr, "Finished mimicing a syscall, expected %lx, got %lx\n", original_ret, curr_ret);
-  return original_ret == curr_ret; 
+  fprintf(stderr, "Finished mimicing a syscall, expected %lx, got %lx\n", sys.ret_val, curr_ret);
+  return sys.ret_val == curr_ret; 
 }
 
 void mimic_write() {
@@ -242,24 +255,28 @@ void read_syscalls(){
     }
 
     DEBUG("Read the syscall number " << buffer);
-    syses[syses_filled++] = buffer;
+    sys_t sys;
+    sys.syscall_num = buffer;
     uint64_t num_params = syscalls[buffer].args;
     DEBUG("Syscall " << syscalls[buffer].name << " has " << num_params << " parameters");
-    if (syses_filled + num_params + 1 >= MAX_SYSCALLS) { // +1 for return
+    if (syses_filled >= MAX_SYSCALLS) { // +1 for return
       cerr << "Overflowing the syscalls array!\n";
       exit(2);
     }
 
+    memset(sys.params, NUM_SYSCALL_PARAMS, sizeof(uint64_t));
     DEBUG("Reading " << num_params << " parameters");
     for (int i = 0; i < num_params; i++) {
       fread((char*) &buffer, sizeof(uint64_t), 1, sys_file);
       DEBUG("Read in parameter " << i << ":" << buffer);
-      syses[syses_filled++] = buffer;
+      sys.params[i] = buffer;
     }
     DEBUG("Reading the syscall return value");
     fread((char*) &buffer, sizeof(uint64_t), 1, sys_file);
     DEBUG("Read the return value: " << buffer);
-    syses[syses_filled++] = buffer;
+    sys.ret_val = buffer;
+
+    syses[syses_filled++] = sys;
   }
 
   DEBUG("Finished reading in syscalls");

@@ -40,7 +40,8 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
 
   fprintf(stderr, "in SEG handler\n");
   fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
-  while(1){}
+  exit(5);
+  //  while(1){}
   int j, nptrs; 
   void* buffer[200];
   char** strings;
@@ -193,10 +194,10 @@ void test_malloc(){
 
 static int wrapped_main(int argc, char** argv, char** env) {
   //test_malloc();
-  DEBUG("Alpaca started, waiting for user input to continue");
+  /*DEBUG("Alpaca started, waiting for user input to continue");
   char *getline_buf = NULL;
   size_t getline_size;
-  getline(&getline_buf, &getline_size, stdin);
+  getline(&getline_buf, &getline_size, stdin);*/
   DEBUG("Entered Alpaca's main");
   setup_segv_handler();
   wrong_writes = 0;

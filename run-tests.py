@@ -2,6 +2,7 @@ import subprocess
 from subprocess import PIPE
 import sys
 import os
+import time
 
 NUM_PRINTFS = 100
 
@@ -29,6 +30,8 @@ for test, res in pairs:
         f.write(outdata)
     with open("error-%s.txt" % test, "w") as f:
         f.write(errdata)
+
+    time.sleep(0.25)
 #        print "disabler stderr:"
 #        for line in disabler.stderr:
 #            print line
