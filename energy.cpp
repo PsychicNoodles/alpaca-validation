@@ -53,25 +53,32 @@ vector<string> find_in_dir(string dir, string substr) {
 }
 
 void push_energy_info(map<string, uint64_t>* readings, string dir) {
+  DEBUG("Pushing energy info for " << dir);
   string name = file_readline(dir + ENERGY_NAME);
   uint64_t energy;
   istringstream(file_readline(dir + ENERGY_FILE)) >> energy;
+  DEBUG("Reading for " << name << ": " << energy);
   readings->insert(make_pair(name, energy));
 }
 
 void measure_energy() {
+  DEBUG("Measuring energy");
   map<string, uint64_t> readings;
   vector<string> powerzones = find_in_dir(ENERGY_ROOT, "intel-rapl:");
+  DEBUG("Found " << powerzones.size() << " zones");
   for(auto &zone : powerzones) {
+    DEBUG("Trying zone " << zone);
     string zonedir = string(ENERGY_ROOT) + "/" + zone + "/";
     push_energy_info(&readings, zonedir);
     vector<string> subzones = find_in_dir(zonedir, zone);
+    DEBUG("Found " << subzones.size() << " subzones");
     for(auto &sub : subzones) {
-      // path join in C++
+      DEBUG("Trying subzone " << sub);
       push_energy_info(&readings, zonedir + sub + "/");
     }
   }
   measurements.push_back(readings);
+  DEBUG("Finished measuring energy");
 }
 
 void sig_measure_handler(int signal) {
