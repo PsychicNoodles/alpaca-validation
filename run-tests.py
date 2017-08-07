@@ -19,7 +19,7 @@ else:
 
 for test, res in pairs:
     with open("output-%s.txt" % test, "w+") as out, open("error-%s.txt" % test, "w") as err:
-        sub = subprocess.Popen([ENERGY_MEASURE, TEST_PROG, test], stdout=out, stderr=err, stdin=PIPE)
+        sub = subprocess.Popen([ENERGY_MEASURE, TEST_PROG, test + "_func", test], stdout=out, stderr=err, stdin=PIPE)
         
         sub.communicate()
         out.seek(0)

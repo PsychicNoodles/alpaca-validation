@@ -117,19 +117,6 @@ void output_energy() {
   exit(0);
 }
 
-void sig_stop_handler(int signal) {
-  if(signal != SIGUSR2) {
-    cerr << "Stop handler caught the wrong signal: " << sys_siglist[signal] << "!\n";
-    exit(3);
-  }
-
-  DEBUG("Waiting for energy measurement");
-  while(measuring) {}
-  DEBUG("Finished waiting for energy measurement");
-  DEBUG("Outputting energy readings");
-  output_energy();
-}
-
 int main(int argc, char** argv){
   int num_args = argc - 1;
   if (num_args < 2) {
@@ -142,20 +129,20 @@ int main(int argc, char** argv){
   const char* prog_path = argv[1];
   func = argv[2];
 
-  char* sub_argv[argc];
-  for(int i = 1; i < argc; i++) {
-    sub_argv[i - 1] = (char*) malloc(strlen(argv[i]) + 1);
-    strcpy(sub_argv[i - 1], argv[i]);
+  char* sub_argv[argc - 1];
+  sub_argv[0] = argv[1];
+  for(int i = 3; i < argc; i++) {
+    sub_argv[i - 2] = (char*) malloc(strlen(argv[i]) + 1);
+    strcpy(sub_argv[i - 2], argv[i]);
   }
-  sub_argv[argc - 1] = NULL;
+  sub_argv[argc - 2] = NULL;
 
   DEBUG("Test program is " << prog_path);
   DEBUG("Test function is " << func);
-  
+
   //setting up the environment
   string env_func = "ALPACA_FUNC=";
   env_func += func;
-  env_func += "_func";
   char* env[5];
   env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
   env[2] = (char*) env_func.c_str();
@@ -221,19 +208,14 @@ int main(int argc, char** argv){
     exit(3);
   } else { //parent process
     DEBUG("In parent process");
-    struct sigaction measure_sigaction, stop_sigaction;
+    struct sigaction measure_sigaction;
     
     memset(&measure_sigaction, 0, sizeof(struct sigaction));
     measure_sigaction.sa_handler = sig_measure_handler;
     sigemptyset(&measure_sigaction.sa_mask);
-
-    memset(&stop_sigaction, 0, sizeof(struct sigaction));
-    stop_sigaction.sa_handler = sig_stop_handler;
-    sigemptyset(&stop_sigaction.sa_mask);
-
-    DEBUG("Setting up signal handlers");
+    
+    DEBUG("Setting up signal handler");
     sigaction(SIGUSR1, &measure_sigaction, NULL);
-    //sigaction(SIGUSR2, &stop_sigaction, NULL);
     DEBUG("Setup finished");
 
     while(pid_t child = waitpid(-1, NULL, 0)) {
