@@ -206,7 +206,7 @@ triple_double_t triple_double_func() {
   return ret;
 }
 
-#define NUM_MALLOCS 100
+#define NUM_MALLOCS 1000
 void malloc_free_func() {
   
   char* a[NUM_MALLOCS];
@@ -217,18 +217,7 @@ void malloc_free_func() {
     printf("malloced item at %d of size %d", i, i*3);
   }
   
-  //char* a[NUM_MALLOCS];
-  //printf("malloced array of size %d\n", NUM_MALLOCS);
-  //for(int i = 0; i < NUM_MALLOCS; i++) {
-  //printf("will malloc %d\n", i);
-  //a[i] = (char*)malloc(sizeof(char)*(i*3));
-  //printf("malloced %d\n", i);
-  //}
-  //for(int i = 0; i < NUM_MALLOCS; i++) {
-  //  printf("printf %d ", i);
-  //}
 
-  
   printf("finished mallocing\n");
 
   

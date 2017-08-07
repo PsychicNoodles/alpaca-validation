@@ -25,11 +25,12 @@
 #define DEBUG(x) do { clog << x << "\n"; } while(0)
 #endif
 
-
 using namespace std;
 
 vector<map<string, uint64_t>> measurements;
 char* func;
+
+bool measuring = false;
 
 string file_readline(string path) {
   ifstream in(path);
@@ -86,16 +87,17 @@ void sig_measure_handler(int signal) {
     cerr << "Measurement handler caught the wrong signal: " << sys_siglist[signal] << "!\n";
     exit(3);
   }
+  
+  DEBUG("Waiting for previous energy measurement");
+  while(measuring) {}
+  DEBUG("Finished waiting for previous energy measurement");
+  measuring = true;
   DEBUG("Measuring energy");
   measure_energy();
+  measuring = false;
 }
 
-void sig_stop_handler(int signal) {
-  if(signal != SIGUSR2) {
-    cerr << "Stop handler caught the wrong signal: " << sys_siglist[signal] << "!\n";
-    exit(3);
-  }
-
+void output_energy() {
   DEBUG("Stopping");
   cout << "Energy measurements for function: " << func << "\n";
     
@@ -113,6 +115,19 @@ void sig_stop_handler(int signal) {
   }
 
   exit(0);
+}
+
+void sig_stop_handler(int signal) {
+  if(signal != SIGUSR2) {
+    cerr << "Stop handler caught the wrong signal: " << sys_siglist[signal] << "!\n";
+    exit(3);
+  }
+
+  DEBUG("Waiting for energy measurement");
+  while(measuring) {}
+  DEBUG("Finished waiting for energy measurement");
+  DEBUG("Outputting energy readings");
+  output_energy();
 }
 
 int main(int argc, char** argv){
@@ -218,9 +233,18 @@ int main(int argc, char** argv){
 
     DEBUG("Setting up signal handlers");
     sigaction(SIGUSR1, &measure_sigaction, NULL);
-    sigaction(SIGUSR2, &stop_sigaction, NULL);
+    //sigaction(SIGUSR2, &stop_sigaction, NULL);
     DEBUG("Setup finished");
 
-    while(1){}
+    while(pid_t child = waitpid(-1, NULL, 0)) {
+      if(errno == ECHILD) {
+        DEBUG("All children exited, gathering energy info");
+        break;
+      } else {
+        DEBUG("Child process " << child << " finished");
+      }
+    }
+
+    output_energy();
   }
 }

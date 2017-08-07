@@ -261,9 +261,10 @@ static int wrapped_main(int argc, char** argv, char** env) {
   
   int ppid = atoi(energy_ppid);
 
-  if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR1);
+  const union sigval val = {0};
+  if (strcmp(alpaca_mode, "d") == 0) sigqueue(ppid, SIGUSR1, val);
   int main_return = og_main(argc, argv, env);
-  if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR1);
+  if (strcmp(alpaca_mode, "d") == 0) sigqueue(ppid, SIGUSR1, val);
 
   /*DEBUG("Checking printf buffer");
   uint8_t* printf_buffer = (uint8_t*)140737488338320;
@@ -282,7 +283,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   check_self_maps();
   cerr << "Wrong writes: " << wrong_writes << "\n";
 
-    DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
+  DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
   
   //test_malloc();
   //fclose(return_file);
@@ -292,7 +293,6 @@ static int wrapped_main(int argc, char** argv, char** env) {
   //fclose(ret_addr_file);
   
   //test_malloc();
-  if (strcmp(alpaca_mode, "d") == 0) kill(ppid, SIGUSR2);
   return main_return;
 }
 

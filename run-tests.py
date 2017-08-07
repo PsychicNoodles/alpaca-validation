@@ -18,18 +18,16 @@ else:
     pairs = zip(tests, results)
 
 for test, res in pairs:
-    sub = subprocess.Popen([ENERGY_MEASURE, TEST_PROG, test], stdout=PIPE, stderr=PIPE, stdin=PIPE)
-    
-    outdata, errdata = sub.communicate()
-    if outdata.split("\n")[0] == res:
-        print "%s test was successful" % test
-    else:
-        print "%s test was unsuccessful (expected %s, got %s)" % (test, res, outdata.split("\n")[0])
-
-    with open("output-%s.txt" % test, "w") as f:
-        f.write(outdata)
-    with open("error-%s.txt" % test, "w") as f:
-        f.write(errdata)
+    with open("output-%s.txt" % test, "w+") as out, open("error-%s.txt" % test, "w") as err:
+        sub = subprocess.Popen([ENERGY_MEASURE, TEST_PROG, test], stdout=out, stderr=err, stdin=PIPE)
+        
+        sub.communicate()
+        out.seek(0)
+        line = out.readline().rstrip("\n")
+        if line == res:
+            print "%s test was successful" % test
+        else:
+            print "%s test was unsuccessful (expected %s, got %s)" % (test, res, line)
 
     time.sleep(0.25)
 #        print "disabler stderr:"
