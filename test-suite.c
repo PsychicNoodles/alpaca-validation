@@ -206,7 +206,7 @@ triple_double_t triple_double_func() {
   return ret;
 }
 
-#define NUM_MALLOCS 1000
+#define NUM_MALLOCS 10
 void malloc_free_func() {
   
   char* a[NUM_MALLOCS];
@@ -376,14 +376,14 @@ int main(int argc, char** argv) {
     printf("%d\n", *ret);
   }
   if(cmp(argv[1], "sixteen_ll")) {
-          sixteen_ll_t ret = sixteen_ll_func();
-          printf("%lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g, ret.h, ret.i, ret.j, ret.k, ret.l, ret.m, ret.n, ret.o, ret.p);
+    sixteen_ll_t ret = sixteen_ll_func();
+    printf("%lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld %lld\n", ret.a, ret.b, ret.c, ret.d, ret.e, ret.f, ret.g, ret.h, ret.i, ret.j, ret.k, ret.l, ret.m, ret.n, ret.o, ret.p);
   }
   if(cmp(argv[1], "printf")) {
-          printf_func();
+    printf_func();
   }
 
-    if(cmp(argv[1], "printf2")) {
-          printf2_func();
+  if(cmp(argv[1], "printf2")) {
+    printf2_func();
   }
 }

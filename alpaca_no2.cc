@@ -23,6 +23,11 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+// syscalls
+#include <poll.h>
+#include <sys/shm.h>
+#include <sys/time.h>
+
 #define MAX_OPERANDS 126
 #define NUM_RET_REGS 4
 
@@ -600,6 +605,163 @@ void log_write(uint64_t dest_address, bool large_write, bool large_large_write) 
   DEBUG("Finished logging a write");
 }
 
+void log_local_syscall(uint64_t buf_addr, uint64_t buf_size, uint64_t syscall_count, uint64_t stack_ptr) {
+  DEBUG("Logging local syscall");
+
+  if ((uintptr_t) stack_base > buf_addr && stack_ptr < buf_addr) {
+    DEBUG("Syscall uses a local buffer");
+  
+    DEBUG("Buffer address is " << int_to_hex(buf_addr) << "; buffer size is " << buf_size);
+
+    DEBUG("Logging the write/syscall count number");
+    writef((char*) &syscall_count, sizeof(uint64_t), local_sys_file);
+    
+    if(buf_addr == 0) {
+      DEBUG("Buffer address is NULL, setting the size to 0 and skipping buffer contents");
+      char zero = 0;
+      writef(&zero, sizeof(char), local_sys_file);
+    } else {
+      DEBUG("Logging the buffer size");
+      writef((char*) &buf_size, sizeof(uint64_t), local_sys_file);
+
+      DEBUG("Logging the buffer contents");
+      writef((char*) buf_addr, buf_size, local_sys_file);
+    }
+  } else {
+    DEBUG("Syscall does not use a local buffer");
+  }
+
+  DEBUG("Finished logging local syscall");
+}
+
+// not beautifully named but easier on the eyes
+#define local_sizereg(buf_reg, size_reg) log_local_syscall(get_register(syscall_params[(buf_reg)], context), \
+                                                           get_register(syscall_params[(size_reg)], context), \
+                                                           syscall_count, \
+                                                           stack_ptr)
+#define local_sizeregptr(buf_reg, size_reg) log_local_syscall(get_register(syscall_params[(buf_reg)], context), \
+                                                              *(uint64_t*)get_register(syscall_params[(size_reg)], context), \
+                                                              syscall_count, \
+                                                              stack_ptr)
+#define local_sizeconst(buf_reg, size) log_local_syscall(get_register(syscall_params[(buf_reg)], context), \
+                                                         (size),        \
+                                                         syscall_count, \
+                                                         stack_ptr)
+#define local_sizemultreg(buf_reg, coeff, size_reg) log_local_syscall(get_register(syscall_params[(buf_reg)], context), \
+                                                                      (coeff) * get_register(syscall_params[(size_reg)], context), \
+                                                                      syscall_count, \
+                                                                      stack_ptr)
+#define SUPPORTED_SYSCALLS 55 // number of the highest supported syscall
+
+void check_local_syscall(uint64_t sys_num, uint64_t syscall_count, ucontext_t* context) {
+  DEBUG("Checking if syscall uses a local buffer");
+
+  uint64_t stack_ptr = context->uc_mcontext.gregs[REG_RSP] - 128;
+  ud_type_t buf_reg, size_reg;
+  uint64_t buf_size = -1;
+
+  switch(sys_num) {
+  case 0: case 1: case 17: case 18: // read, write, pread64, pwrite64
+    local_sizereg(1, 2);
+    break;
+  case 2: case 21: // open and access
+    local_sizeconst(0, FILENAME_MAX);
+    break;
+  case 4: case 6: // stat and lstat
+    local_sizeconst(0, FILENAME_MAX);
+    local_sizeconst(1, sizeof(struct stat));
+    break;
+  case 5: // fstat
+    local_sizeconst(1, sizeof(struct stat));
+    break;
+  case 7: // poll
+    local_sizeconst(0, sizeof(struct pollfd));
+    break;
+  case 13: // rt_sigaction
+    local_sizeconst(1, sizeof(struct sigaction));
+    local_sizeconst(2, sizeof(struct sigaction));
+    break;
+  case 14: // rt_sigprocmask
+    local_sizeconst(1, sizeof(sigset_t));
+    local_sizeconst(2, sizeof(sigset_t));
+    break;
+  case 19: case 20: // readv and writev
+    local_sizemultreg(1, sizeof(struct iovec), 2);
+    break;
+  case 22: // pipe
+    local_sizeconst(0, sizeof(int) * 2);
+    break;
+  case 23: // select
+    local_sizemultreg(1, sizeof(fd_set), 0);
+    local_sizemultreg(2, sizeof(fd_set), 0);
+    local_sizemultreg(3, sizeof(fd_set), 0);
+    local_sizeconst(4, sizeof(struct timespec));
+    break;
+  case 27: // mincore
+    local_sizereg(2, 1);
+    break;
+  case 30: // shmat
+    struct shmid_ds shmbuf;
+    shmctl(get_register(syscall_params[0], context), IPC_STAT, &shmbuf);
+    local_sizeconst(1, shmbuf.shm_segsz);
+    break;
+  case 31: // shmctl
+    local_sizeconst(2, sizeof(struct shmid_ds));
+    break;
+  case 35: // nanosleep
+    local_sizeconst(0, sizeof(struct timespec));
+    local_sizeconst(1, sizeof(struct timespec));
+    break;
+  case 36: // getitimer
+    local_sizeconst(1, sizeof(struct itimerval));
+    break;
+  case 38: // setitimer
+    local_sizeconst(1, sizeof(struct itimerval));
+    local_sizeconst(2, sizeof(struct itimerval));
+    break;
+  case 40: // sendfile
+    local_sizeconst(2, sizeof(off_t));
+    break;
+  case 42: case 49: // connect and bind
+    local_sizereg(1, 2);
+    break;
+  case 43: case 51: case 52: // accept, getsockname, and getpeername
+    local_sizeregptr(1, 2);
+    local_sizeconst(2, sizeof(int));
+    break;
+  case 44: // sendto
+    local_sizereg(1, 2);
+    local_sizereg(4, 5);
+    break;
+  case 45: // recvfrom
+    local_sizereg(1, 2);
+    local_sizeregptr(4, 5);
+    local_sizeconst(5, sizeof(int));
+    break;
+  case 46: case 47: // sendmsg and recvmsg
+    local_sizeconst(1, sizeof(struct msghdr));
+    break;
+  case 53: // socketpair
+    local_sizeconst(3, sizeof(int) * 2);
+    break;
+  case 54: // setsockopt
+    local_sizereg(3, 4);
+    break;
+  case 55: // getsockopt
+    local_sizeregptr(3, 4);
+    break;
+  default:
+    if(sys_num > SUPPORTED_SYSCALLS) {
+      cerr << "Unsupported syscall encountered: " << sys_num << "!\n";
+      exit(3);
+    }
+    DEBUG("Syscall does not use any buffers");
+    return;
+  }
+
+  DEBUG("Finished checking if syscall uses a local buffer");
+}
+
 void log_syscall(uint64_t sys_num, ucontext_t* context) {
   static uint64_t syscall_count = 0;
   
@@ -630,24 +792,7 @@ void log_syscall(uint64_t sys_num, ucontext_t* context) {
     writef((char*) &reg_val, sizeof(uint64_t), sys_file);
   }
   
-  uint64_t stack_ptr = context->uc_mcontext.gregs[REG_RSP] - 128;
-  uint64_t buff_addr = context->uc_mcontext.gregs[REG_RSI];
-  if (sys_num == 1 && ((uintptr_t) stack_base > buff_addr && stack_ptr < buff_addr)) {
-    DEBUG("Syscall using a local stack buffer! (" << syscall_count << "th syscall)");
-    DEBUG("Syscall number: " << sys_num);
-
-    uint64_t buff_size = context->uc_mcontext.gregs[REG_RDX];
-    DEBUG("Buffer address is " << int_to_hex(buff_addr) << "; buffer size is " << buff_size);
-
-    DEBUG("Logging the write/syscall count number");
-    writef((char*) &syscall_count, sizeof(uint64_t), local_sys_file);
-    
-    DEBUG("Logging the buffer size");
-    writef((char*) &buff_size, sizeof(uint64_t), local_sys_file);
-    
-    DEBUG("Logging the buffer contents");
-    writef((char*) buff_addr, buff_size, local_sys_file);
-  }
+  check_local_syscall(sys_num, syscall_count, context);
 
   syscall_count++;
 

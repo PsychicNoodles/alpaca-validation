@@ -27,7 +27,6 @@ main_fn_t og_main;
 #define OUT_FMODE "wb"
 #define IN_FMODE "rb"
 
-
 /**
  * A temporary gdb workaround debugger.
  */
@@ -41,14 +40,6 @@ void seg_handler(int sig, siginfo_t* info, void* context) {
   fprintf(stderr, "in SEG handler\n");
   fprintf(stderr, "SEGFAULT address: %p\n", info->si_addr);
   exit(5);
-  //  while(1){}
-  int j, nptrs; 
-  void* buffer[200];
-  char** strings;
-//  signal(sig, SIG_DFL);
-  nptrs = backtrace(buffer, 200);
-
-  backtrace_symbols_fd(buffer, nptrs, STDERR_FILENO);
 }
 
 void setup_segv_handler() {
@@ -60,7 +51,6 @@ void setup_segv_handler() {
   sig_action.sa_flags = SA_SIGINFO;
   sigaction(SIGSEGV, &sig_action, 0);
 }
-
 
 
 /**
@@ -134,7 +124,6 @@ void setup_check() {
 
   start_byte = single_step(func_address);
 
-
   read_syscalls();
   read_writes();
   read_returns();
@@ -182,16 +171,6 @@ void check_self_maps() {
   DEBUG(self_maps);
 }
 
-void test_malloc(){
-        size_t size_arr[7] = {16, 32, 64, 128, 256, 512, 1024}; 
-        cerr << "Checking malloc calls\n";
-
-        for(int i =0; i< 7; i++){
-                char* test = (char*)malloc(sizeof(char)*size_arr[i]);
-                cerr << "Malloced: " << int_to_hex((uint64_t)test) << " ;usable size: " << malloc_usable_size(test) << "\n";
-        }
-}
-
 static int wrapped_main(int argc, char** argv, char** env) {
   //test_malloc();
   /*DEBUG("Alpaca started, waiting for user input to continue");
@@ -223,7 +202,7 @@ static int wrapped_main(int argc, char** argv, char** env) {
   DEBUG("The mode is " << alpaca_mode);
   DEBUG("The target function is " << func_name);
 
-  check_self_maps(); 
+  //check_self_maps(); 
 
   func_address = find_address("/proc/self/exe", func_name);
   if (func_address == 0) {
@@ -266,38 +245,18 @@ static int wrapped_main(int argc, char** argv, char** env) {
   int main_return = og_main(argc, argv, env);
   if (strcmp(alpaca_mode, "d") == 0) sigqueue(ppid, SIGUSR1, val);
 
-  /*DEBUG("Checking printf buffer");
-  uint8_t* printf_buffer = (uint8_t*)140737488338320;
-  for(int i = 0; i < 256; i++) {
-    DEBUG("printf[" << i << "]: " << (int) printf_buffer[i]);
-    }*/
-  
-  fflush(stdout);
-  fflush(stderr);
-  fflush(return_file);
-  fflush(write_file);
-  fflush(sys_file);
-  fflush(local_sys_file);
-  fflush(ret_addr_file);
-
-  check_self_maps();
+  //check_self_maps();
   cerr << "Wrong writes: " << wrong_writes << "\n";
 
   DEBUG("File pointers: " << int_to_hex((uint64_t)return_file) << ", " << int_to_hex((uint64_t)write_file) << ", " << int_to_hex((uint64_t)sys_file) << ", " << int_to_hex((uint64_t)ret_addr_file));
   
-  //test_malloc();
-  //fclose(return_file);
-  //fclose(write_file);
-  //fclose(sys_file);
-  //fclose(local_sys_file);
-  //fclose(ret_addr_file);
+  fclose(return_file);
+  fclose(write_file);
+  fclose(sys_file);
+  fclose(local_sys_file);
+  fclose(ret_addr_file);
   
-  //test_malloc();
   return main_return;
-}
-
-void shut_down() {
-  //to be implemented
 }
 
 /**
@@ -334,23 +293,9 @@ uint64_t find_address(const char* file_path, string func_name) {
   for (auto &sec : f.sections()) {
     if (sec.get_hdr().type != elf::sht::symtab && sec.get_hdr().type != elf::sht::dynsym) continue;
 
-    // advanced ELF information about functions
-    /*fprintf(stderr, "Section '%s':\n", sec.get_name().c_str());
-    fprintf(stderr, "%-16s %-5s %-7s %-5s %s %s\n",
-    "Address", "Size", "Binding", "Index", "Name", "Type");*/
-                
-
     for (auto sym : sec.as_symtab()) {
       auto &d = sym.get_data();
       if (d.type() != elf::stt::func || sym.get_name() != func_name) continue;
-
-      /*fprintf(stderr, "0x%-16lx %-5lx %-7s %5s %s %s\n",
-              offset + d.value, d.size,
-              to_string(d.binding()).c_str(),
-              to_string(d.shnxd).c_str(),
-              sym.get_name().c_str(),
-              to_string(d.type()).c_str());*/
-                        
 
       addr = offset + d.value; 
     }
@@ -358,7 +303,6 @@ uint64_t find_address(const char* file_path, string func_name) {
 
   close(read_fd);
   return addr;
-  //potential problem with multiple entries in the table for the same function? 
 }
 
 
@@ -387,15 +331,14 @@ void debug_registers(ucontext_t* context) {
   for(int i = 0; i < 16; i++) {
     char buf[256];
     snprintf(buf, 256, "Value of %s: %s\n", reg_n[i], int_to_hex((uint64_t)context->uc_mcontext.gregs[regs[i]]));
-    //fputs(buf, stderr);
+    fputs(buf, stderr);
   }
-  ;
   const char* fpreg_n[] = {"xmm0", "xmm1"};
   for (int i = 0; i < 2; i++) {
     for (int j = 0; j < 16; j++) {
       char buf[256];
       snprintf(buf, 256, "Value of %s at byte %d: %hhu\n", fpreg_n[i], j, ((uint8_t*)context->uc_mcontext.fpregs->_xmm[i].element)[j]);
-      //fputs(buf, stderr);
+      fputs(buf, stderr);
     }
   }
 }
