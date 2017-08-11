@@ -1,8 +1,4 @@
-example
-prime-test
-alpaca_no2.so
-alpaca_fn_disabler.so
-read-logger
+*.so
 [._]*.s[a-v][a-z]
 [._]*.sw[a-p]
 [._]s[a-v][a-z]
@@ -12,4 +8,6 @@ read-logger
 .\#*
 output*
 error*
-
+*-logger
+energy
+test-suite
