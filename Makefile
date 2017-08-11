@@ -16,3 +16,5 @@ energy: energy.cc
 check: all test-suite energy
 	python run-tests.py ${TESTS}
 
+clean:
+	rm alpaca.so test-suite energy
