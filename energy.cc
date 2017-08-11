@@ -144,7 +144,7 @@ int main(int argc, char** argv){
   string env_func = "ALPACA_FUNC=";
   env_func += func;
   char* env[5];
-  env[0] = (char*) "LD_PRELOAD=./alpaca.so:libelf++.so:libudis86.so";
+  env[0] = (char*) "LD_PRELOAD=/home/markusar/Desktop/alpaca/alpaca-validation/alpaca.so:libelf++.so:libudis86.so";
   env[2] = (char*) env_func.c_str();
   env[4] = NULL;
 
@@ -186,6 +186,10 @@ int main(int argc, char** argv){
       int status;
       waitpid(alpaca_pid, &status, 0);
       DEBUG("Disabler finished waiting, status was " << status);
+      if(status != 0) {
+        cerr << "Analyzer exited with non-zero status, stopping!\n";
+        exit(2);
+      }
 
       env[1] = (char*) "ALPACA_MODE=d";
      
@@ -218,7 +222,12 @@ int main(int argc, char** argv){
     sigaction(SIGUSR1, &measure_sigaction, NULL);
     DEBUG("Setup finished");
 
-    while(pid_t child = waitpid(-1, NULL, 0)) {
+    int status;
+    while(pid_t child = waitpid(-1, &status, 0)) {
+      if(status != 0) {
+        cerr << "Child process " << child << " exited with non-zero status, stopping!\n";
+        exit(2);
+      }
       if(errno == ECHILD) {
         DEBUG("All children exited, gathering energy info");
         break;

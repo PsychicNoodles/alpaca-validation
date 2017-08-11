@@ -10,8 +10,9 @@ minlog: alpaca_shared.cc alpaca_no2.cc alpaca_fn_disabler.cc
 test-suite: test-suite.c
 	clang test-suite.c -g -o test-suite
 
-check: all test-suite
+energy: energy.cc
+	clang++ --std=c++11 energy.cc -g -o energy
+
+check: all test-suite energy
 	python run-tests.py ${TESTS}
 
-energy: energy.cpp
-	clang++ --std=c++11 energy.cpp -g -o energy
