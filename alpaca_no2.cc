@@ -39,7 +39,7 @@ using namespace std;
 uint64_t mem_writing; //the destination address of an instruction that writes
 bool large_write; // for 128-bit writes (xmm registers)
 bool large_large_write; //for 256-bit writes(ymm registers AVX)
-uint64_t* stack_base; //the beginning of the stack for the targeted function
+
 
 //keep track of the detected writes and syscall of the function 
 uint64_t write_syscall_count;
@@ -66,7 +66,6 @@ void test_operand(ud_t* obj, int n, int num_op, ucontext_t* context);
 void trap_handler(int signal, siginfo_t* info, void* cont);
 void log_syscall(uint64_t sys_num, ucontext_t* context);
 void log_sys_ret(uint64_t ret_value_reg);
-
 
 /**
  *Finds the destination memory address of an instruction
@@ -113,16 +112,6 @@ uint64_t find_destination(const ud_operand_t* op, ucontext_t* context) {
   DEBUG("Finished finding destination: " << int_to_hex((uint64_t) (offset + base + (index * scale))));
   //calculating the memory address based on assembly register information 
   return (uint64_t) (offset + base + (index * scale)); 
-}
-
-void handle_push(ud_t* obj, ucontext_t* context) {
-  /*
-  const ud_operand_t* op = ud_insn_opr(obj, 0);      
-  uint64_t reg_val = get_register(op->base, context);
-  DEBUG("Handling a push, register value: " << int_to_hex(reg_val));
-  mem_writing = context->uc_mcontext.gregs[REG_RSP]-8;
-  DEBUG("Set mem_writing to " << int_to_hex(mem_writing) << ", rsp is " << int_to_hex(context->uc_mcontext.gregs[REG_RSP]));
-  */
 }
 
 /**
@@ -216,7 +205,7 @@ void log_returns(ucontext_t* context) {
   }
 
   uint8_t reg_flag = 0; 
-  //which registers we're writing to
+  //which registers we are writing to
   for (int i = 0; i < NUM_RET_REGS; i++) {
     if (ret_regs_touched[i]) reg_flag |= (1 << i);
   }
@@ -246,7 +235,7 @@ void log_returns(ucontext_t* context) {
   DEBUG("Finished logging returns");
 }
 
-//ret addr logging
+//return addresses logging used in the checker mode
 void log_ret_addrs(uint64_t addr) {
   DEBUG("Logging return address: " << int_to_hex(addr));
   writef((char*)&addr, sizeof(uint64_t), ret_addr_file);
@@ -277,14 +266,13 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   static int write_count = 0;
   static uint8_t* instr_first_byte = (uint8_t*)func_address;
   static unsigned int function_start_counter = 0;
-  static uint64_t ret_addr = 0; //ret addr logging 
+  static uint64_t ret_addr = 0; //ret addr logging for the checker mode
   
   uint64_t* rsp;
 
   ucontext_t* context = reinterpret_cast<ucontext_t*>(cont);
 
-  debug_registers(context);
-
+  //debug_registers(context);
   
   //logging writes
   if (mem_writing != 0) {
@@ -342,19 +330,17 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
 
       stack_base = (uint64_t*)context->uc_mcontext.gregs[REG_RSP];
       DEBUG("Stack base is " << int_to_hex((uint64_t) stack_base));
-
-      instr_first_byte[0] = start_byte; //save the original byte
+      //save the original byte
+      instr_first_byte[0] = start_byte; 
       DEBUG("Restoring " << int_to_hex(start_byte) << " to first byte " << int_to_hex((uint64_t) instr_first_byte));
-      context->uc_mcontext.gregs[REG_RIP]--; //rerun the current instruction 
-      
+      //rerun the current instruction 
+      context->uc_mcontext.gregs[REG_RIP]--;   
       initialize_ud(&ud_obj);
       first_run = false;
 
     }
   }
  
-
-
   //if end of a function is reached in the next step  
   if (return_reached) {
     DEBUG("The last instruction was a return");
@@ -365,7 +351,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       DEBUG_CRITICAL("The target function has returned");
       
       log_returns(context);
-      log_ret_addrs(ret_addr); //ret addr logging
+      //return addresses logging used in checker mode
+      log_ret_addrs(ret_addr); 
       
       DEBUG("Stopping single stepping");
       //stops single-stepping
@@ -377,7 +364,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
       DEBUG("There were " << write_syscall_count << " writes/syscalls");
       
       DEBUG("Resetting static variables");
-      // reset for next time target function is called
+      //reset for next time target function is called
       non_regular_start = false; 
       first_run = true;
       call_count = 0;
@@ -402,16 +389,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   for(int i = 0; i < 8; i++) {
     DEBUG("Instruction byte at " << i << ": " << int_to_hex((uint64_t)ud_insn_ptr(&ud_obj)[i]));
   }
-  //SPECIAL TEST CASE
-  if(context->uc_mcontext.gregs[REG_RIP] == 0x7fff7bd1de00) check_self_maps();
-
-  /*
-    void* buf[200];
-    int bt = backtrace(buf, 200);
-    DEBUG("Getting the backtrace (" << bt << ")");
-    backtrace_symbols_fd(buf, bt, 2);
-  */
-
+ 
   uint8_t instr[18];
   switch (ud_insn_mnemonic(&ud_obj)) {
   case UD_Iret: case UD_Iretf:
@@ -421,7 +399,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     DEBUG("Will return to " << int_to_hex(*rsp) << " (" << int_to_hex((uint64_t) rsp) << ")");
     return_reached = true;
     break;
-
   case UD_Icall:
     DEBUG("Special case: call");
     call_count++;
@@ -436,8 +413,8 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
   case UD_Ijno: case UD_Ijnp: case UD_Ijns: case UD_Ijnz: case UD_Ijo:
   case UD_Ijp: case UD_Ijs: case UD_Ijz: case UD_Ilahf: case UD_Ildmxcsr:
   case UD_Ileave: case UD_Inop: case UD_Ipop: case UD_Ipopfq:
-  case UD_Iprefetchnta: case UD_Iprefetcht0: case UD_Iprefetcht1:
-  case UD_Iprefetcht2: case UD_Irep:
+  case UD_Iprefetchnta: case UD_Iprefetcht0: case UD_Iprefetcht1: 
+  case UD_Iprefetcht2: case UD_Ipush: case UD_Ipushfq: case UD_Irep:
   case UD_Irepne: case UD_Irsm: case UD_Isahf: case UD_Isetb: case UD_Isetbe:
   case UD_Isetl: case UD_Isetle: case UD_Iseto: case UD_Isetp: case UD_Isets:
   case UD_Isetz: case UD_Istmxcsr: case UD_Iverr: case UD_Iverw:
@@ -477,14 +454,6 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     log_syscall(context->uc_mcontext.gregs[REG_RAX], context);
     waiting_syscall = true;
     break;
-    //special case for push 
-  case UD_Ipush:
-    DEBUG("Special case: push");
-    handle_push(&ud_obj, context);
-    break;
-  case UD_Ipushfq:
-    DEBUG("Special case: pushfq not supported yet\n");
-    exit(2);
   case UD_Iinvalid:
     DEBUG("Invalid instruction: udis cannot recognize it");
     memcpy(instr, ud_insn_ptr(&ud_obj), 18);
@@ -537,8 +506,7 @@ void trap_handler(int signal, siginfo_t* info, void* cont) {
     } else {
       DEBUG("Unknown invalid instruction");
       exit(2);
-    }
-            
+    }           
     break;
   default:
     DEBUG("Unknown instruction, counting operands");

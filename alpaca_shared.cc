@@ -19,13 +19,18 @@ FILE* ret_addr_file;
 //the byte overwrtitten with 0xCC for single-stepping, used in analyzer
 uint8_t start_byte;
 
+//keep track if there are any wrong writes
 uint64_t wrong_writes;
+
+//the beginning of the stack for the targeted function
+uint64_t* stack_base; 
 
 typedef int (*main_fn_t)(int, char**, char**);
 main_fn_t og_main;
 
 #define OUT_FMODE "wb"
 #define IN_FMODE "rb"
+
 
 /**
  * A temporary gdb workaround debugger.
@@ -55,7 +60,7 @@ void setup_segv_handler() {
 
 /**
  * Enables single-stepping (instruction by instruction) through the function
- * func_address: (virtual) address of the function in memory
+ * address: (virtual) address of the function in memory
  */
 uint8_t single_step(uint64_t address) {
   DEBUG("Enabling single step for the function at " << int_to_hex(address));
@@ -171,12 +176,15 @@ void check_self_maps() {
   DEBUG(self_maps);
 }
 
-static int wrapped_main(int argc, char** argv, char** env) {
-  //test_malloc();
-  /*DEBUG("Alpaca started, waiting for user input to continue");
+void wait_at_startup(){
+  DEBUG("Alpaca started, waiting for user input to continue");
   char *getline_buf = NULL;
   size_t getline_size;
-  getline(&getline_buf, &getline_size, stdin);*/
+  getline(&getline_buf, &getline_size, stdin);
+}
+
+static int wrapped_main(int argc, char** argv, char** env) {
+  //wait_at_startup();
   DEBUG("Entered Alpaca's main");
   setup_segv_handler();
   wrong_writes = 0;
@@ -268,7 +276,6 @@ static int wrapped_main(int argc, char** argv, char** env) {
  * @returns a non-zero value until there are no shared objects to be processed. 
  */
 static int callback(struct dl_phdr_info *info, size_t size, void *data) {
-  // or info->dlpi_name == "\0" if first run doesn't work ?
   static int run = 0;
   if (run) return 0;
 
@@ -276,6 +283,10 @@ static int callback(struct dl_phdr_info *info, size_t size, void *data) {
   run = 1;
   return 0; 
 }
+
+/*
+ * Find the address of the targeted function
+ */
 
 uint64_t find_address(const char* file_path, string func_name) {
   dl_iterate_phdr(callback, NULL);
@@ -315,14 +326,21 @@ void initialize_ud(ud_t* ud_obj) {
   DEBUG("Finished initializing the udis86 object");
 }
 
+/*
+ *Display the addresses in hexadecimal
+ */
 char* int_to_hex(uint64_t i) {
-  // hacky debug code
   static char buf[15];
   snprintf(buf, 15, "%#014lx", i);
   return buf;
 }
 
+/**
+ *Prints the content of the registers when debugging 
+ */
+
 void debug_registers(ucontext_t* context) {
+  return;
   DEBUG("Debugging registers");
   int regs[] = {REG_RAX, REG_RCX, REG_RDX, REG_RBX, REG_RSP, REG_RBP, REG_RSI,
                 REG_RDI, REG_R8, REG_R9, REG_R10, REG_R11, REG_R12, REG_R13, REG_R14, REG_R15};
@@ -342,6 +360,9 @@ void debug_registers(ucontext_t* context) {
     }
   }
 }
+/*
+ *Write data to a file pointer
+ */
 
 void writef(char* data, size_t size, FILE* file) {
   char fname[256];

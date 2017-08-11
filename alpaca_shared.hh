@@ -354,6 +354,8 @@ extern uint8_t start_byte; // used in analyzer
 
 extern uint64_t wrong_writes;
 
+extern uint64_t* stack_base; 
+
 /**
  * Locates the address of the target function
  * file_path: the path to the binary file
